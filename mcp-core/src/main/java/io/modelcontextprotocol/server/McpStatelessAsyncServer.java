@@ -48,6 +48,10 @@ import static io.modelcontextprotocol.spec.McpError.RESOURCE_NOT_FOUND;
  *
  * @author Dariusz Jędrzejczyk
  */
+/*
+ * 无状态业务实现与有状态服务器并列：仍保存全服务器共享的功能注册表，但不保存某个客户端的 Session。 initialize 也是普通 method
+ * handler，用于返回能力/版本信息；每次业务调用只接收本次传输上下文。 因为没有长期双向会话，不提供有状态 Exchange 的客户端反向调用、订阅及会话通知生命周期。
+ */
 public class McpStatelessAsyncServer {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpStatelessAsyncServer.class);
@@ -446,6 +450,9 @@ public class McpStatelessAsyncServer {
 		return Mono.error(McpError.builder(ErrorCodes.INTERNAL_ERROR).message("Internal error").build());
 	}
 
+	// 与有状态工具调用保持同样的错误层次：工具不存在为 INVALID_PARAMS；
+	// arguments 的 Schema 校验失败返回 isError=true 的工具结果，且不执行业务函数。
+	// 列表可见性过滤只用于 tools/list，调用权限仍须由业务自行判断。
 	private McpStatelessRequestHandler<CallToolResult> toolsCallRequestHandler() {
 		return (ctx, params) -> {
 			McpSchema.CallToolRequest callToolRequest = jsonMapper.convertValue(params,

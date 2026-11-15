@@ -17,6 +17,9 @@ import org.jspecify.annotations.Nullable;
 /**
  * Builds the {@code params._meta} block every modern request carries.
  */
+// modern 不把版本/能力放在一次性握手中，而是在 params._meta 中逐请求声明。
+// 应用自定义项先经过 applicationEntries；保留命名空间和 progressToken 由客户端独占。
+// capabilities 来自当前调用配置的输入处理器，因此某次调用覆盖 handler 后，能力声明也随之改变。
 final class RequestMeta {
 
 	private static final String RESERVED_PREFIX = "io.modelcontextprotocol/";
@@ -65,6 +68,8 @@ final class RequestMeta {
 		Assert.notNull(clientCapabilities, "clientCapabilities must not be null");
 		Assert.isTrue(progressToken == null || progressToken instanceof String || progressToken instanceof Integer
 				|| progressToken instanceof Long, "progressToken must be a string or an integer");
+		// 这里放入 schema 对象而非预先编码的 JSON 字符串；最终随整个请求统一序列化。
+		// 没有进度监听时不发送 token，服务器也就无需为这次调用产生进度通知。
 		Map<String, Object> meta = new LinkedHashMap<>();
 		meta.put(MetaKeys.PROTOCOL_VERSION, protocolVersion);
 		meta.put(MetaKeys.CLIENT_CAPABILITIES, clientCapabilities);

@@ -44,6 +44,9 @@ import reactor.core.publisher.Mono;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 工具领域的适配层：将通用 params 解码为 CallToolRequest，查仓库、校验能力/参数，再调用工具。
+// 工具可以返回 CallToolResult 或 InputRequiredResult；响应包装还可以选择单结果或通知流。
+// feature 不处理连接，也不保存多轮局部变量；状态恢复与公共结果封装由 McpServer 统一完成。
 public final class ToolsFeature implements McpFeature {
 
 	private static final Logger logger = LoggerFactory.getLogger(ToolsFeature.class);
@@ -114,6 +117,8 @@ public final class ToolsFeature implements McpFeature {
 
 	private Mono<McpAsyncResponse<CallToolOutcome>> call(McpRequestContext ctx, McpAsyncTool tool,
 			CallToolRequest request) {
+		// 顺序有语义：能力不足是协议错误；HTTP 参数头不一致也是协议错误；
+		// 之后的输入 schema 错误转为 isError=true 的工具结果，供模型修正参数，而非抛协议异常。
 		McpException missing = RequiredCapabilities.check(tool.requiredCapabilities(), ctx);
 		if (missing != null) {
 			return Mono.error(missing);
@@ -176,6 +181,9 @@ public final class ToolsFeature implements McpFeature {
 	}
 
 	// Nonconforming output is a server bug, so it fails as an internal error.
+	// 只验证成功的最终工具结果；input_required 尚未产生业务输出，isError 的内容则是失败说明。
+	// 声明了 outputSchema 却缺失/违反 structuredContent 属于服务端缺陷，交由 McpServer 映射内部错误。
+	// 若只有 structuredContent 而没有 content，补一份 JSON 文本以兼容读取文本内容的消费者。
 	private CallToolOutcome checkOutput(Tool tool, CallToolOutcome outcome) {
 		if (!(outcome instanceof CallToolResult result) || Boolean.TRUE.equals(result.isError())) {
 			return outcome;

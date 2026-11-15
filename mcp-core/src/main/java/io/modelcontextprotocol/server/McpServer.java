@@ -144,6 +144,12 @@ import reactor.core.publisher.Mono;
  * @see McpSyncServer
  * @see McpServerTransportProvider
  */
+/*
+ * 中文阅读入口：本类只负责收集配置、校验工具 Schema、装配服务器，不执行具体业务。 先选传输类型，再选 sync/async：stdio 与旧 SSE 使用
+ * McpServerSession， Streamable HTTP 使用 McpStreamableServerSession，stateless 则直接安装消息处理器。
+ * 同步构建最终也会创建 McpAsyncServer；同步回调如何转换线程，见 McpServerFeatures.fromSync。 build()
+ * 不等于完成客户端握手；initialize 与 initialized 是随后经传输到达的协议消息。
+ */
 public interface McpServer {
 
 	McpSchema.Implementation DEFAULT_SERVER_INFO = McpSchema.Implementation.builder("Java SDK MCP Server", "0.15.0")
@@ -244,6 +250,8 @@ public interface McpServer {
 			var jsonSchemaValidator = (this.jsonSchemaValidator != null) ? this.jsonSchemaValidator
 					: McpJsonDefaults.getSchemaValidator();
 
+			// 构建期检查 Schema 本身是否合法；与 tools/call 时检查 arguments 是否符合 Schema 是两层职责。
+			// validateToolInputs 只控制后者，关闭输入校验并不跳过这里的定义校验。
 			validateAsyncToolSchemas(jsonSchemaValidator, this.tools);
 
 			return new McpAsyncServer(transportProvider, jsonMapper == null ? McpJsonDefaults.getMapper() : jsonMapper,
@@ -273,6 +281,8 @@ public interface McpServer {
 			var jsonSchemaValidator = this.jsonSchemaValidator != null ? this.jsonSchemaValidator
 					: McpJsonDefaults.getSchemaValidator();
 
+			// 构建期检查 Schema 本身是否合法；与 tools/call 时检查 arguments 是否符合 Schema 是两层职责。
+			// validateToolInputs 只控制后者，关闭输入校验并不跳过这里的定义校验。
 			validateAsyncToolSchemas(jsonSchemaValidator, this.tools);
 
 			return new McpAsyncServer(transportProvider, jsonMapper == null ? McpJsonDefaults.getMapper() : jsonMapper,
@@ -883,6 +893,8 @@ public interface McpServer {
 			McpServerFeatures.Sync syncFeatures = new McpServerFeatures.Sync(this.serverInfo, this.serverCapabilities,
 					this.tools, this.resources, this.resourceTemplates, this.prompts, this.completions,
 					this.rootsChangeHandlers, this.instructions, this.toolFilters);
+			// 把用户的同步函数包装为延迟执行的 Mono，随后复用异步路由、会话和传输。
+			// immediateExecution 决定是否为主要业务回调卸载阻塞工作，不代表把所有请求串行化。
 			McpServerFeatures.Async asyncFeatures = McpServerFeatures.Async.fromSync(syncFeatures,
 					this.immediateExecution);
 
@@ -918,6 +930,8 @@ public interface McpServer {
 			McpServerFeatures.Sync syncFeatures = new McpServerFeatures.Sync(this.serverInfo, this.serverCapabilities,
 					this.tools, this.resources, this.resourceTemplates, this.prompts, this.completions,
 					this.rootsChangeHandlers, this.instructions, this.toolFilters);
+			// 把用户的同步函数包装为延迟执行的 Mono，随后复用异步路由、会话和传输。
+			// immediateExecution 决定是否为主要业务回调卸载阻塞工作，不代表把所有请求串行化。
 			McpServerFeatures.Async asyncFeatures = McpServerFeatures.Async.fromSync(syncFeatures,
 					this.immediateExecution);
 			var jsonSchemaValidator = this.jsonSchemaValidator != null ? this.jsonSchemaValidator

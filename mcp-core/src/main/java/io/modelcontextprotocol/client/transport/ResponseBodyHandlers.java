@@ -45,6 +45,9 @@ import reactor.core.publisher.Mono;
  * @author Dariusz Jędrzejczyk
  * @author Daniel Garnier-Moiroux
  */
+// HTTP 传输共用的边界层：将 JDK Flow 的字节块适配成 Reactor 流，并完成 UTF-8、
+// 行和 SSE 帧的增量解析。网络分块边界不保证落在字符、换行或 JSON 消息边界上。
+// 收到 HttpResponse 还不等于释放连接：每条分支必须消费 body 或显式订阅后取消。
 public final class ResponseBodyHandlers {
 
 	/**
@@ -99,6 +102,8 @@ public final class ResponseBodyHandlers {
 	 * @param maxSize the maximum number of bytes read for a single inbound message
 	 */
 	public static Flux<String> decodeLines(Publisher<List<ByteBuffer>> publisher, int maxSize) {
+		// 每次订阅新建有状态解码器，保存跨 ByteBuffer 的 UTF-8 残片及未完成行。
+		// 行长、SSE 事件累积和普通响应体总字节分别在各自层检查，不限制 SSE 流总寿命。
 		return Flux.defer(() -> {
 			Utf8LineDecoder dec = new Utf8LineDecoder(plusFramingOverhead(maxSize));
 			return JdkFlowAdapter.flowPublisherToFlux(publisher)
@@ -115,6 +120,8 @@ public final class ResponseBodyHandlers {
 	 * event
 	 */
 	static Flux<SseEvent> decodeSseResponse(Flux<String> lines, int maxSize) {
+		// 一条 SSE 事件可能有多行 data；空行提交事件，流结束还需 flush 最后一个事件。
+		// 此处只解析封装，不判断 data 是 initialize 结果、工具响应还是通知。
 		return Flux.defer(() -> {
 			SseEventParser parser = new SseEventParser(maxSize);
 			return lines.<SseEvent>handle((line, sink) -> parser.feed(line).ifPresent(sink::next))
@@ -225,6 +232,9 @@ public final class ResponseBodyHandlers {
 	 */
 	public static Mono<HttpResponse<Publisher<List<ByteBuffer>>>> sendAsync(HttpClient httpClient,
 			HttpRequest request) {
+		// 手动桥接 CompletableFuture：取消订阅会取消 HTTP 交换；若响应与取消竞争，
+		// doOnDiscard 仍需负责取消无人消费的 body。取消产生的 CancellationException
+		// 在这里作为结束处理，避免把本方主动关闭当成额外网络错误继续传播。
 		// Not Mono.fromFuture: cancelling aborts the exchange, and the HttpClient then
 		// fails the future with a CompletionException wrapping a CancellationException,
 		// which fromFuture reports as a dropped error. Only this method can cancel the

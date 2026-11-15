@@ -71,6 +71,9 @@ import reactor.core.publisher.Sinks;
  * backwards compatibility</a>
  */
 @Deprecated
+// 旧版 HTTP+SSE 采用两条方向不同的通路：先 GET SSE，从 endpoint 事件发现 POST
+// 地址；所有服务端 JSON-RPC 消息沿 SSE 返回，POST 的 HTTP 响应只确认发送状态。
+// 与 Streamable HTTP 不同，这里只声明旧协议版本，并没有同等的会话恢复机制。
 public class HttpClientSseClientTransport implements McpClientTransport {
 
 	private static final String MCP_PROTOCOL_VERSION = ProtocolVersions.MCP_2024_11_05;
@@ -443,6 +446,9 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 
 	@Override
 	public Mono<Void> connect(Function<Mono<JSONRPCMessage>, Mono<JSONRPCMessage>> handler) {
+		// 订阅时构造并定制 GET，再独立订阅 SSE 流。外层连接 Mono 只等待第一个信号，
+		// 后续 SSE 消息依靠保存的 sseSubscription 持续处理，而不让 connect 永远不完成。
+		// 首个空 primer 也可能完成 connect；POST 真正可用仍需等待 endpoint 事件。
 		var uri = Utils.resolveUri(this.baseUri, this.sseEndpoint);
 
 		return Mono.deferContextual(ctx -> {
@@ -481,6 +487,8 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 				.<Optional<JSONRPCMessage>>handle((sseEvent, events) -> {
 					try {
 						if (ENDPOINT_EVENT_TYPE.equals(sseEvent.event())) {
+							// 服务端提供的地址先经 validator 检查，再完成一次性的 endpoint sink。
+							// 默认校验限制同源或相对地址并拒绝路径穿越；发送逻辑复用这个已验地址。
 							String messageEndpointUri = sseEvent.data();
 							try {
 								messageEndpointValidator.validate(uri, messageEndpointUri);
@@ -567,6 +575,8 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 */
 	@Override
 	public Mono<Void> sendMessage(JSONRPCMessage message) {
+		// initialize 请求也走这里，因此可以先创建请求等待者，再异步等待 endpoint。
+		// HTTP POST 完成不产生业务结果；真正的 response 经 SSE handler 回到会话层。
 
 		return this.messageEndpointSink.asMono().flatMap(messageEndpointUri -> {
 			if (isClosing) {
@@ -605,6 +615,8 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 * Either way it has to be consumed, or the connection is never released.
 	 */
 	private Mono<Void> sendHttpPost(final String endpoint, final String body) {
+		// 每次从模板 copy 请求构建器，避免把一次调用的请求头修改留到下一次。
+		// 成功响应体也必须订阅并消费，否则 JDK HttpClient 连接资源无法释放。
 		final URI requestUri = Utils.resolveUri(baseUri, endpoint);
 		return Mono.deferContextual(ctx -> {
 			var builder = this.requestBuilder.copy()
@@ -638,6 +650,8 @@ public class HttpClientSseClientTransport implements McpClientTransport {
 	 */
 	@Override
 	public Mono<Void> closeGracefully() {
+		// 订阅后设置关闭标志并取消 SSE 订阅；本方法不等待业务 RPC 完成，
+		// 上层客户端先关闭 McpClientSession，让其待响应请求收到终止错误。
 		return Mono.fromRunnable(() -> {
 			isClosing = true;
 			Disposable subscription = sseSubscription.get();

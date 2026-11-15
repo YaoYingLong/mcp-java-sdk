@@ -49,6 +49,11 @@ import io.modelcontextprotocol.util.Assert;
  * @see McpAsyncServer
  * @see McpSchema
  */
+/*
+ * 同步门面：注册、删除、通知等方法调用异步实现后 block() 等待结果，协议语义与 Async 共用。 不要把“同步
+ * API”理解成服务端所有客户端请求都串行：业务回调默认由 fromSync 卸载到 boundedElastic。 immediateExecution
+ * 仅影响回调包装策略；若在非阻塞线程直接使用这些 block() API，仍可能阻塞或报错。
+ */
 public class McpSyncServer {
 
 	/**

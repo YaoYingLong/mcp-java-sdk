@@ -46,6 +46,9 @@ import reactor.core.scheduler.Schedulers;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 服务端 STDIO 的运行时边界：专用 reader 解析每行、inFlight 按 id 跟踪取消、专用 writer 串行输出。
+// 每条请求独立分发，普通结果/错误/流式通知都编码成 JSON 行；没有 HTTP 状态码或会话头。
+// 读取线程不能执行阻塞业务，否则后续请求和取消通知都无法读到，因此分发移交 boundedElastic。
 public class StdioMcpTransport {
 
 	private static final Logger logger = LoggerFactory.getLogger(StdioMcpTransport.class);
@@ -229,6 +232,8 @@ public class StdioMcpTransport {
 		}
 	}
 
+	// 必须先登记再订阅，兼容立即完成的 Mono；重复的在途 id 不回错误，避免客户端误当原请求响应。
+	// 取消/关闭 dispose 对应订阅；writer 真正发送前还检查 cancelled，丢弃已排队但失效的输出。
 	private void dispatch(JSONRPCRequest request) {
 		Object key = McpStdio.idKey(request.id());
 		// Registered before subscribing: a request that completes synchronously removes

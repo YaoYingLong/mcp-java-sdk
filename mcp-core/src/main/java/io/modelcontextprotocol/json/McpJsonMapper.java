@@ -13,6 +13,10 @@ import java.io.IOException;
  */
 public interface McpJsonMapper {
 
+	// 中文导读：协议层只依赖这个接口；Jackson 2/3 的具体实现由独立模块提供。
+	// readValue 负责 JSON 文本/字节到对象，convertValue 负责已解析 Map 等对象到具体协议类型，
+	// writeValue 则用于发送前编码。消息属于 request、notification 还是 response，由协议层判定。
+
 	/**
 	 * Deserialize JSON string into a target type.
 	 * @param content JSON as String

@@ -34,6 +34,10 @@ import reactor.core.publisher.Mono;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 阅读入口：这是 modern 客户端的装配器，与 legacy 包中的同名类属于两套调用链。
+// async/sync 共用传输、请求构造和多轮协议，只在驱动调用及输入处理器的方式上不同。
+// build() 不发送 initialize，也不建立协议会话；实际请求自行携带版本、能力和可选 clientInfo。
+// 客户端保留身份相关的目录/发现缓存，通常按用户创建；底层 transport 可共享，由创建者管理生命周期。
 public final class McpClient {
 
 	/** The default timeout of one network exchange. */
@@ -173,6 +177,8 @@ public final class McpClient {
 			return (B) this;
 		}
 
+		// 每次 build 都创建独立 sender 和工具目录，但引用同一个外部 transport。
+		// HTTP 需要目录中的 x-mcp-header 定义来生成参数头；STDIO 不镜像参数，无需这条查目录链路。
 		ClientRequestFactory requests() {
 			McpJsonMapper mapper = this.jsonMapper != null ? this.jsonMapper : McpJsonDefaults.getMapper();
 			JsonRpcRequestSender sender = new JsonRpcRequestSender(this.transport, mapper, this.clientInfo,
@@ -268,6 +274,8 @@ public final class McpClient {
 		 * call, which may run on other threads. Defaults to
 		 * {@link McpTransportContext#EMPTY}.
 		 */
+		// 在发起调用的线程读取身份一次，再随所有轮次写入 Reactor Context。
+		// 这样 HTTP 授权回调即使换线程，也无需重新从 ThreadLocal 猜测用户；clientInfo 不能替代身份认证。
 		public SyncBuilder transportContextProvider(Supplier<McpTransportContext> provider) {
 			Assert.notNull(provider, "provider must not be null");
 			this.transportContextProvider = provider;

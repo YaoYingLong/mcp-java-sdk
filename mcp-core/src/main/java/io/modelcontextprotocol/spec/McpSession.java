@@ -21,6 +21,10 @@ import reactor.core.publisher.Mono;
  * @author Christian Tzolov
  * @author Dariusz Jędrzejczyk
  */
+// 会话层表达的是协议消息交换，不规定 stdio/HTTP 等传输细节。
+// request 有 ID 并等待对应 response；notification 无 ID，只表示单向发送，
+// 它的 Mono 完成不能证明对端业务处理完成。资源关闭的具体范围要看实现，
+// 例如 McpClientSession 只清理等待响应者，客户端还会另外关闭 transport。
 public interface McpSession {
 
 	/**

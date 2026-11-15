@@ -19,6 +19,10 @@ import java.util.List;
  *
  * @author Dariusz Jędrzejczyk
  */
+/*
+ * 无状态 Async Server 的阻塞门面，与有状态 McpSyncServer 一样复用异步实现和功能转换器。
+ * “stateless”指不维护客户端会话，不表示工具函数或应用依赖不能有自身状态；并发安全仍由业务保证。
+ */
 public class McpStatelessSyncServer {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpStatelessSyncServer.class);

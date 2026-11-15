@@ -18,6 +18,9 @@ import io.modelcontextprotocol.util.Assert;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 一次请求的只读视图，由 McpServer.dispatch 创建并显式传给仓库和 handler。
+// clientInfo 是客户端自行声明的展示信息；真实用户/权限应来自 transportContext，例如 Servlet 提取的身份。
+// retry/blocking 是本次分发属性：前者影响缓存，后者指导同步适配的执行线程，不是持久会话状态。
 public final class McpRequestContext {
 
 	private final Object requestId;

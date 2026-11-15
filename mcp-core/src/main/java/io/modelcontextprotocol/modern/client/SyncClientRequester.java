@@ -40,6 +40,8 @@ import reactor.core.scheduler.Schedulers;
  * each round, answers the server's input requests with the call's handlers on the same
  * thread, and retries until the result is final.
  */
+// 同步驱动器有自己的 while 循环，而非等待 AsyncClientRequester 的整条异步链。
+// 网络逐轮 block，输入处理器在发起调用的线程直接运行；Reactor Context 则承载传输所需身份。
 final class SyncClientRequester {
 
 	private static final Logger logger = LoggerFactory.getLogger(SyncClientRequester.class);
@@ -144,6 +146,8 @@ final class SyncClientRequester {
 	}
 
 	private <R extends Result> R run(MultiRoundTripRequest<R> request, CallSettings<Object> settings) {
+		// 一次捕获上下文，一次创建总截止时间；重发不得换成另一个用户，也不得重置总预算。
+		// 同步 handler 本身不能被这个截止时间强行打断，完成后通过 deadline.check 判断是否超时。
 		McpTransportContext context = transportContext();
 		String method = request.method();
 		CallTimeoutDeadline deadline = new CallTimeoutDeadline(method, settings.callTimeout());
@@ -257,6 +261,8 @@ final class SyncClientRequester {
 	 */
 	private static HandlerResponses respond(InputHandlers<Object> handlers, String method,
 			Map<String, InputRequest> requests, CallTimeoutDeadline deadline) {
+		// prepare 先核实整轮所有请求都有 handler，再执行任何一个，避免一半输入已处理才发现缺能力。
+		// 不使用调度器切线程，故调用者的 ThreadLocal 对同步 elicitation handler 仍然可见。
 		List<PendingInputRequest<Object>> pending = handlers.prepare(method, requests);
 		Map<String, Object> responses = new LinkedHashMap<>();
 		for (PendingInputRequest<Object> p : pending) {

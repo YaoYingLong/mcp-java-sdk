@@ -36,6 +36,10 @@ import org.slf4j.LoggerFactory;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 跨轮状态由客户端携带，服务器用签名验证来源；这里不需要按客户端维护一份会话状态。
+// payload 绑定过期时间、方法、工具名/资源 URI，并可绑定 transportContext 中的 principal。
+// HMAC 提供完整性而非加密：Base64 可解码，状态不应被当成隐藏给客户端的秘密。
+// 有效期内仍可重放；需要单次消费时由业务另外约束，不能把签名误认为防重放存储。
 public final class HmacRequestStateCodec implements RequestStateCodec {
 
 	private static final Logger logger = LoggerFactory.getLogger(HmacRequestStateCodec.class);
@@ -98,6 +102,8 @@ public final class HmacRequestStateCodec implements RequestStateCodec {
 		catch (IllegalArgumentException e) {
 			return null;
 		}
+		// 先验证签名再解析 payload；随后再比较期限、principal 和目标，任一不符都不向 handler 放行。
+		// principalExtractor 默认返回 null，所以默认没有用户绑定；部署方需结合可信传输身份配置。
 		if (!MessageDigest.isEqual(expectedMac, actualMac)) {
 			return null;
 		}

@@ -18,6 +18,9 @@ import io.modelcontextprotocol.json.TypeRef;
  */
 public final class JacksonMcpJsonMapper implements McpJsonMapper {
 
+	// 中文导读：Jackson 2 适配器使用 com.fasterxml.jackson 的 ObjectMapper；与 Jackson 3 模块实现
+	// 同一个 McpJsonMapper 接口，使上层协议/会话不需要随 JSON 库版本改变调用方式。
+
 	private final ObjectMapper objectMapper;
 
 	/**

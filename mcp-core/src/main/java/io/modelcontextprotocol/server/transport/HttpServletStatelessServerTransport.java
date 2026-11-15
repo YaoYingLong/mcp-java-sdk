@@ -35,6 +35,11 @@ import reactor.core.publisher.Mono;
  * @author Dariusz Jędrzejczyk
  */
 @WebServlet(asyncSupported = true)
+/*
+ * 无状态 HTTP 边界：POST 请求直接映射到 McpStatelessServerHandler，返回单个 application/json 响应。 通知成功返回
+ * 202；不接受客户端 JSON-RPC response，因为没有服务端反向请求需要匹配。 不维护 Session 表或长期 SSE，GET 返回
+ * 405；关闭仅标记拒绝新请求，无连接集合需要遍历清理。
+ */
 public class HttpServletStatelessServerTransport extends HttpServlet implements McpStatelessServerTransport {
 
 	/**
@@ -192,6 +197,8 @@ public class HttpServletStatelessServerTransport extends HttpServlet implements 
 
 			McpSchema.JSONRPCMessage message = McpSchema.deserializeJsonRpcMessage(jsonMapper, body);
 
+			// handler 返回的是 JSON-RPC envelope；其中可以包含协议 error，而 HTTP 仍为正常的 200。
+			// HTTP 校验/读取失败与业务协议错误属于不同层次，不能只看 HTTP 状态判断工具是否成功。
 			if (message instanceof McpSchema.JSONRPCRequest jsonrpcRequest) {
 				try {
 					McpSchema.JSONRPCResponse jsonrpcResponse = this.mcpHandler

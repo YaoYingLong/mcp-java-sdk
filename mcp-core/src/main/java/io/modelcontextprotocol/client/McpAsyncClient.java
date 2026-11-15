@@ -84,6 +84,11 @@ import reactor.core.publisher.Mono;
  * @see McpClientSession
  * @see McpClientTransport
  */
+// 客户端的业务协议层：将 tools/resources/prompts 等 Java API 映射为方法名、参数和
+// 结果 TypeRef，并注册服务端反向调用客户端的处理器。字节收发归 transport，
+// 请求 ID 与响应关联归 McpClientSession，初始化状态归 LifecycleInitializer。
+// 大多数业务操作返回待订阅的 Mono；本类没有给所有用户异步回调统一切换执行线程，
+// 调用方需要自行在可能阻塞的异步回调中选择调度方式。
 public class McpAsyncClient {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpAsyncClient.class);
@@ -212,6 +217,9 @@ public class McpAsyncClient {
 		this.applyElicitationDefaults = features.applyElicitationDefaults();
 
 		// Request Handlers
+		// MCP 是双向 JSON-RPC：客户端也会收到服务端的 request。
+		// capabilities 不只是 initialize 的声明，还决定这里是否安装对应处理器；
+		// 声明 sampling/elicitation 却不提供实现会在构造期间失败，而非等收到请求再失败。
 		Map<String, RequestHandler<?>> requestHandlers = new HashMap<>();
 
 		// Ping MUST respond with an empty data, but not NULL response.
@@ -333,6 +341,9 @@ public class McpAsyncClient {
 				asyncElicitationCompleteNotificationHandler(elicitationCompleteConsumersFinal));
 
 		Function<Initialization, Mono<Void>> postInitializationHook = init -> {
+			// 此钩子发生在 initialized 通知发送之后、初始化等待者被放行之前。
+			// 开启工具输出 schema 缓存时会请求第一页工具；这里调用 internal 方法，
+			// 直接复用本轮会话，避免再次等待当前尚未完成的初始化任务。
 
 			if (init.initializeResult().capabilities().tools() == null || !enableCallToolSchemaCaching) {
 				return Mono.empty();
@@ -432,6 +443,8 @@ public class McpAsyncClient {
 	 * @return A Mono that completes when the connection is closed
 	 */
 	public Mono<Void> closeGracefully() {
+		// 先终止会话里等待响应的 RPC，再关闭实际传输资源；整个顺序在订阅时执行。
+		// 会话的 closeGracefully 本身不负责销毁进程或 HTTP SSE 订阅。
 		return Mono.defer(() -> {
 			return this.initializer.closeGracefully().then(transport.closeGracefully());
 		});
@@ -702,6 +715,8 @@ public class McpAsyncClient {
 	 * @see #listTools()
 	 */
 	public Mono<McpSchema.CallToolResult> callTool(McpSchema.CallToolRequest callToolRequest) {
+		// 代表性调用链：确保初始化 -> 检查服务端声明 -> 带 TypeRef 发 RPC -> 校验结果。
+		// JSON-RPC error 在会话层变成异常；CallToolResult.isError 则是工具执行结果的一部分。
 		return this.initializer.withInitialization("calling tool", init -> {
 			if (init.initializeResult().capabilities().tools() == null) {
 				return Mono.error(new IllegalStateException("Server does not provide tools capability"));
@@ -746,6 +761,8 @@ public class McpAsyncClient {
 	 * @return A Mono that emits the list of all tools result
 	 */
 	public Mono<McpSchema.ListToolsResult> listTools() {
+		// 无参重载会沿 nextCursor 拉取所有页并合并；带 cursor 的重载只请求一页。
+		// expand 的下一页请求仍走初始化入口，但已建立的初始化状态会被共享。
 		return this.listTools(McpSchema.FIRST_PAGE).expand(result -> {
 			String next = result.nextCursor();
 			return (next != null && !next.isEmpty()) ? this.listTools(next) : Mono.empty();
@@ -800,6 +817,8 @@ public class McpAsyncClient {
 
 	private NotificationHandler asyncToolsChangeNotificationHandler(
 			List<Function<List<McpSchema.Tool>, Mono<Void>>> toolsChangeConsumers) {
+		// list_changed 通知只作为失效信号使用：重新查询完整列表后才调用消费者。
+		// flatMap 订阅各消费者，不能把注册顺序理解成回调完成顺序。
 		// TODO: params are not used yet
 		return params -> this.listTools()
 			.flatMap(listToolsResult -> Flux.fromIterable(toolsChangeConsumers)

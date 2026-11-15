@@ -29,6 +29,9 @@ import reactor.core.publisher.Mono;
  *
  * @param <R> the type of the final result
  */
+// 一次逻辑调用的协议状态机，不持有连接或服务端会话。
+// sendFirst -> 检查 resultType -> 处理 inputRequests -> sendRetry，直到 complete 或错误。
+// 每个调用实例记录轮数；同一实例各轮串行，多个调用通过各自实例独立推进。
 final class MultiRoundTripRequest<R extends Result> {
 
 	/** The methods the server may answer with {@code input_required}. */
@@ -97,6 +100,8 @@ final class MultiRoundTripRequest<R extends Result> {
 	 * Sends the request again for {@code inputRequired}, with this round's
 	 * {@code responses} and the server's {@code requestState}.
 	 */
+	// 用户接受 URL 引导后，下一轮可能等待浏览器操作完成，所以只取消紧接着这一轮的 roundTimeout。
+	// 整个调用的 callTimeout 若已配置仍有效；两类超时不能混同。
 	Mono<Object> sendRetry(InputRequiredResult inputRequired, HandlerResponses responses) {
 		this.untimedNextRound = responses.acceptedUrlElicitation();
 		return send(retryParams(this.params, inputRequired, responses.responses()));
@@ -128,6 +133,8 @@ final class MultiRoundTripRequest<R extends Result> {
 		if (++this.inputRounds > this.maxInputRounds) {
 			throw new McpInputRoundsExceededException(this.method, this.maxInputRounds);
 		}
+		// 只有 requestState、没有输入请求的结果同样计入轮数，防止服务端无限要求重发。
+		// 连续此类轮次逐渐退避；出现真实输入请求后重新计数，避免无输入的忙循环。
 		this.stateOnlyRounds = isStateOnly(inputRequired) ? this.stateOnlyRounds + 1 : 0;
 		return inputRequired;
 	}
@@ -174,6 +181,9 @@ final class MultiRoundTripRequest<R extends Result> {
 	 * omitted when there are none, and the server's {@code requestState} as it was
 	 * received, omitted when the server sent none.
 	 */
+	// 每轮都从原始业务参数复制，放入“本轮”的答案和服务端状态，不累积上一轮 inputResponses。
+	// requestState 对客户端是不可解释的字符串，原样回传；其真实性由服务器的 codec 验证。
+	// 这不是网络故障自动重试：响应丢失时调用是否已执行不确定，不能随意重复带副作用的业务。
 	static Map<String, Object> retryParams(Map<String, Object> original, InputRequiredResult inputRequired,
 			Map<String, Object> responses) {
 		Map<String, Object> params = new LinkedHashMap<>(original);

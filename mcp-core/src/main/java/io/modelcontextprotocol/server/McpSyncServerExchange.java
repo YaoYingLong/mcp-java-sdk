@@ -15,6 +15,11 @@ import io.modelcontextprotocol.spec.McpSchema.LoggingMessageNotification;
  * @author Dariusz Jędrzejczyk
  * @author Christian Tzolov
  */
+/*
+ * 对 Async Exchange 的阻塞适配，不创建新会话、不改变本次传输上下文。 createElicitation/createMessage 等 block()
+ * 会等待客户端反向响应，所以接收客户端消息的线程必须能继续运行； 正常 sync handler 通过 McpServerFeatures 默认卸载到
+ * boundedElastic，避免占住非阻塞传输线程。
+ */
 public class McpSyncServerExchange {
 
 	private final McpAsyncServerExchange exchange;

@@ -88,6 +88,11 @@ import static io.modelcontextprotocol.spec.McpError.RESOURCE_NOT_FOUND;
  * @see McpSchema
  * @see McpClientSession
  */
+/*
+ * 服务端业务路由中心：保存全服务器共享的工具/资源/提示词，创建 method -> handler 表， 并把 Session 工厂交给 Provider。Provider
+ * 管理连接及会话集合，Session 管理 JSON-RPC 关联， Exchange 则把本次调用可用的客户端能力、传输上下文和反向调用入口交给业务函数。 调试
+ * tools/call 可依次跟踪：传输解包 -> Session 路由 -> toolsCallRequestHandler -> 注册的 handler。
+ */
 public class McpAsyncServer {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpAsyncServer.class);
@@ -159,6 +164,8 @@ public class McpAsyncServer {
 
 		this.protocolVersions = mcpTransportProvider.protocolVersions();
 
+		// Provider 确定一个客户端连接后再调用工厂；路由表由各会话共享，握手状态与请求关联表归各自会话。
+		// stdio 在 setSessionFactory 中立即创建唯一会话并启动输入读取；旧 SSE 在 GET 建连时创建会话。
 		mcpTransportProvider.setSessionFactory(transport -> {
 			String sessionId = UUID.randomUUID().toString();
 			return new McpServerSession(sessionId, requestTimeout, transport, this::asyncInitializeRequestHandler,
@@ -195,6 +202,8 @@ public class McpAsyncServer {
 
 		this.protocolVersions = mcpTransportProvider.protocolVersions();
 
+		// Streamable HTTP 的初始化 POST 尚未绑定长期 SSE 连接，因此工厂返回会话及初始化结果 Mono，
+		// 后续 GET 与普通 POST 再分别给同一会话挂接监听流或请求响应流。
 		mcpTransportProvider.setSessionFactory(new DefaultMcpStreamableServerSessionFactory(requestTimeout,
 				this::asyncInitializeRequestHandler, requestHandlers, notificationHandlers,
 				sessionId -> this.cleanupForSession(sessionId), this.jsonSchemaValidator));
@@ -218,6 +227,8 @@ public class McpAsyncServer {
 		return notificationHandlers;
 	}
 
+	// 能力声明同时决定哪些协议方法被注册；缺少能力时不是返回空列表，而是根本没有对应路由。
+	// addTool 等动态注册改变功能集合，但不能凭空启用构造时未声明的能力。
 	private Map<String, McpRequestHandler<?>> prepareRequestHandlers() {
 		Map<String, McpRequestHandler<?>> requestHandlers = new HashMap<>();
 
@@ -264,6 +275,8 @@ public class McpAsyncServer {
 	// ---------------------------------------
 	// Lifecycle Management
 	// ---------------------------------------
+	// 只生成服务器一侧的协商结果。客户端能力的保存、initialized 通知及 Exchange 建立由 Session 负责。
+	// 支持版本来自具体传输；请求版本不支持时返回列表最后一个版本，客户端再决定能否继续。
 	private Mono<McpSchema.InitializeResult> asyncInitializeRequestHandler(
 			McpSchema.InitializeRequest initializeRequest) {
 		return Mono.defer(() -> {
@@ -313,6 +326,8 @@ public class McpAsyncServer {
 	 * Gracefully closes the server, allowing any in-progress operations to complete.
 	 * @return A Mono that completes when the server has been closed
 	 */
+	// 关闭入口交给拥有会话及传输资源的 Provider；完整关闭流程需订阅返回的 Mono。
+	// 是否在方法调用时先设置关闭标志取决于 Provider，例如旧 SSE 实现会立即设置该标志。
 	public Mono<Void> closeGracefully() {
 		return this.mcpTransportProvider.closeGracefully();
 	}
@@ -371,6 +386,8 @@ public class McpAsyncServer {
 			return Mono.error(e);
 		}
 
+		// 动态添加与初始注册走同一输出包装器；真正替换工具及发送 list_changed 在下方 defer 订阅时发生。
+		// listChanged 只控制变更通知，工具集合本身仍会更新。
 		var wrappedToolSpecification = withStructuredOutputHandling(this.jsonSchemaValidator, toolSpecification);
 
 		return Mono.defer(() -> {
@@ -389,6 +406,9 @@ public class McpAsyncServer {
 		});
 	}
 
+	// 统一处理工具输出契约：业务已返回 isError=true 时直接透传；声明 outputSchema 时，
+	// structuredContent 缺失或不符合 Schema 转为工具执行错误结果，而不是抛 JSON-RPC 错误。
+	// 有结构化结果却没有 content 时补等价文本，便于只理解旧内容块的客户端消费。
 	private static class StructuredOutputCallToolHandler
 			implements BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, Mono<McpSchema.CallToolResult>> {
 
@@ -550,6 +570,8 @@ public class McpAsyncServer {
 		return this.mcpTransportProvider.notifyClients(McpSchema.METHOD_NOTIFICATION_TOOLS_LIST_CHANGED, null);
 	}
 
+	// tools/list 的过滤使用本次请求上下文；仅控制列表展示，不替代 tools/call handler 内的访问控制。
+	// 当前返回全部可见工具，尚未实现游标分页。
 	private McpRequestHandler<McpSchema.ListToolsResult> toolsListRequestHandler() {
 		return (exchange, params) -> {
 			// TODO: Implement pagination. Cursors must be computed over the filtered
@@ -578,6 +600,9 @@ public class McpAsyncServer {
 		return Mono.error(McpError.builder(ErrorCodes.INTERNAL_ERROR).message("Internal error").build());
 	}
 
+	// params 先转为完整 CallToolRequest，业务函数收到的是请求对象（包含 arguments 等），不是裸参数 Map。
+	// 错误分层：未知工具 -> INVALID_PARAMS 的 JSON-RPC error；输入不符合工具 Schema ->
+	// 正常 JSON-RPC result 内的 CallToolResult(isError=true)；handler 异常再由 Session 转为协议错误。
 	private McpRequestHandler<CallToolResult> toolsCallRequestHandler() {
 		return (exchange, params) -> {
 			McpSchema.CallToolRequest callToolRequest = jsonMapper.convertValue(params,
@@ -596,6 +621,8 @@ public class McpAsyncServer {
 			}
 
 			McpSchema.Tool tool = toolSpecification.get().tool();
+			// Validator 校验时把 null arguments 视为空 Map，但不会改写原请求；通过后 handler 仍收到原对象。
+			// validateToolInputs=false 会跳过此校验；失败时直接返回，业务 handler 不会执行。
 			CallToolResult validationError = ToolInputValidator.validate(tool, callToolRequest.arguments(),
 					this.validateToolInputs, this.jsonSchemaValidator);
 			if (validationError != null) {
@@ -760,6 +787,8 @@ public class McpAsyncServer {
 	 * resource URI
 	 * @return A Mono that completes when all subscribed sessions have been notified
 	 */
+	// 资源“内容变化”按 URI 精确查订阅者并定向通知，区别于 resources/list_changed 的全客户端广播。
+	// 一个会话发送失败在该分支记录并吞掉，避免阻断其他订阅者；此方法不自动侦测底层文件/数据变化。
 	public Mono<Void> notifyResourcesUpdated(McpSchema.ResourcesUpdatedNotification resourcesUpdatedNotification) {
 		return Mono.defer(() -> {
 			String uri = resourcesUpdatedNotification.uri();
@@ -779,6 +808,8 @@ public class McpAsyncServer {
 		});
 	}
 
+	// 注入 Session onClose 的业务清理钩子：注销该会话的资源订阅，防止断开客户端持续留在订阅集合中。
+	// 真正的连接关闭与 Provider.sessions 的移除仍由会话/传输生命周期负责。
 	private Mono<Void> cleanupForSession(String sessionId) {
 		return Mono.fromRunnable(() -> {
 			removeSessionSubscriptions(sessionId);
@@ -790,6 +821,8 @@ public class McpAsyncServer {
 		this.resourceSubscriptions.entrySet().removeIf(entry -> entry.getValue().isEmpty());
 	}
 
+	// subscribe 能力决定是否注册本方法；这里登记 URI -> 逻辑会话 ID，而不是每条 HTTP 连接。
+	// 因而 Streamable HTTP 的连接重建无需重新登记，直到 unsubscribe、DELETE 或会话关闭才清理。
 	private McpRequestHandler<Object> resourcesSubscribeRequestHandler() {
 		return (exchange, params) -> Mono.defer(() -> {
 			McpSchema.SubscribeRequest subscribeRequest = jsonMapper.convertValue(params,
@@ -844,6 +877,9 @@ public class McpAsyncServer {
 		};
 	}
 
+	// 先查 Resource 注册表，再查 ResourceTemplate；匹配规则统一由 URI 模板管理器提供。
+	// 注册项保存“元数据 + 读取函数”，客户端 read 传入的仍是具体 URI，由业务函数决定如何读取内容。
+	// 两处都不匹配才返回 RESOURCE_NOT_FOUND；多个模板重叠时不应依赖并发 Map 遍历的选择次序。
 	private McpRequestHandler<McpSchema.ReadResourceResult> resourcesReadRequestHandler() {
 		return (ex, params) -> {
 			McpSchema.ReadResourceRequest resourceRequest = jsonMapper.convertValue(params, new TypeRef<>() {
@@ -995,6 +1031,8 @@ public class McpAsyncServer {
 		};
 	}
 
+	// Prompt 注册表按名称查找，handler 接收完整 GetPromptRequest 并负责生成消息列表。
+	// 不存在的名称是 INVALID_PARAMS；这里没有工具输入那样的 JSON Schema 参数校验。
 	private McpRequestHandler<McpSchema.GetPromptResult> promptsGetRequestHandler() {
 		return (exchange, params) -> {
 			McpSchema.GetPromptRequest promptRequest = jsonMapper.convertValue(params,
@@ -1036,6 +1074,8 @@ public class McpAsyncServer {
 	private static final Mono<McpSchema.CompleteResult> EMPTY_COMPLETION_RESULT = Mono
 		.just(new McpSchema.CompleteResult(new CompleteCompletion(List.of(), 0, false)));
 
+	// 补全先校验引用的 Prompt/Resource 及参数名，再按 CompleteReference 查用户注册的补全函数。
+	// 返回空补全集合并不总是错误：例如固定资源 URI 或没有注册补全 handler 时返回 EMPTY_COMPLETION_RESULT。
 	private McpRequestHandler<McpSchema.CompleteResult> completionCompleteRequestHandler() {
 		return (exchange, params) -> {
 

@@ -40,6 +40,10 @@ import reactor.core.scheduler.Schedulers;
  * @author Christian Tzolov
  * @author Dariusz Jędrzejczyk
  */
+// 客户端拥有并启动服务端子进程：向其 stdin 写请求，从 stdout 按行读取协议消息，
+// stderr 单独作为诊断输出。stdout 上混入普通日志会被当作 JSON-RPC 解析而失败。
+// 入站、出站、错误流各有单线程调度器；业务 API 使用 Mono 并不意味着阻塞式管道读取消失，
+// 而是由这些专用线程承担。关闭传输也负责终止子进程和释放这三个调度器。
 public class StdioClientTransport implements McpClientTransport {
 
 	private static final Logger logger = LoggerFactory.getLogger(StdioClientTransport.class);
@@ -133,6 +137,9 @@ public class StdioClientTransport implements McpClientTransport {
 	 */
 	@Override
 	public Mono<Void> connect(Function<Mono<JSONRPCMessage>, Mono<JSONRPCMessage>> handler) {
+		// fromRunnable 在订阅时启动进程，subscribeOn 将启动动作移到 boundedElastic。
+		// command 与 args 分别作为 ProcessBuilder 的参数列表传入，不经 shell 拼接解释；
+		// env 覆盖到 ProcessBuilder 继承的环境中。三个长期读取/写入任务随后单独启动。
 		return Mono.<Void>fromRunnable(() -> {
 			logger.info("MCP server starting.");
 			handleIncomingMessages(handler);
@@ -258,6 +265,9 @@ public class StdioClientTransport implements McpClientTransport {
 
 	@Override
 	public Mono<Void> sendMessage(JSONRPCMessage message) {
+		// 注意这个实现的入队发生在方法调用时，不是返回 Mono 被订阅时。
+		// Mono.empty 只表示入队成功，并不等待下面出站线程写完或对端返回 response。
+		// session 会先登记 pendingResponses，再调用此方法，避免快速响应丢失关联。
 		try {
 			// busyLooping retries FAIL_NON_SERIALIZED under concurrent senders
 			this.outboundSink.emitNext(message, Sinks.EmitFailureHandler.busyLooping(Duration.ofMillis(100)));
@@ -273,6 +283,9 @@ public class StdioClientTransport implements McpClientTransport {
 	 * process's input stream. Messages are deserialized and emitted to the inbound sink.
 	 */
 	private void startInboundProcessing() {
+		// 一行就是一条消息；readLine 在积累字符的过程中检查上限，不能先用无界
+		// BufferedReader.readLine 再检查长度，否则缺少换行的输入已经可能占满内存。
+		// 解析完成后进入 inboundSink，再经 connect 注册的 handler 到达会话分发器。
 		this.inboundScheduler.schedule(() -> {
 			try (BufferedReader processReader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
 				String line;
@@ -348,6 +361,8 @@ public class StdioClientTransport implements McpClientTransport {
 	 * delimiter.
 	 */
 	private void startOutboundProcessing() {
+		// publishOn 是这里真正切换写入线程的边界；多调用方先入队，实际序列化、
+		// 写 stdin、补换行与 flush 在 outboundScheduler 上完成。
 		this.handleOutbound(messages -> messages
 			// this bit is important since writes come from user threads, and we
 			// want to ensure that the actual writing happens on a dedicated thread
@@ -398,6 +413,9 @@ public class StdioClientTransport implements McpClientTransport {
 	 */
 	@Override
 	public Mono<Void> closeGracefully() {
+		// 订阅后先置关闭标志并完成各 sink，再短暂延迟、destroy 子进程、等待 onExit。
+		// 这条链没有在本方法内设置等待进程退出的总超时；同步客户端在外层限制关闭等待。
+		// 最后硬 dispose 调度器，以中断仍可能阻塞在管道读取上的任务。
 		return Mono.fromRunnable(() -> {
 			isClosing = true;
 			logger.debug("Initiating graceful shutdown");

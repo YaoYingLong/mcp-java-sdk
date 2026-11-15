@@ -56,6 +56,8 @@ public class DefaultJsonSchemaValidator implements JsonSchemaValidator {
 
 	@Override
 	public ValidationResponse validate(Map<String, Object> schema, Object structuredContent) {
+		// 中文导读：String 输入被当作完整 JSON 文本解析，其他 Java 对象直接转为 JSON 树。
+		// 校验结果统一放入 ValidationResponse，调用层决定转换为工具错误还是异常。
 
 		if (schema == null) {
 			throw new IllegalArgumentException("Schema must not be null");
@@ -91,6 +93,8 @@ public class DefaultJsonSchemaValidator implements JsonSchemaValidator {
 
 	@Override
 	public ValidationResponse validateSchema(Map<String, Object> schema) {
+		// 此处只用 2020-12 元模式检查 schema 文档；显式声明其他方言时跳过这项检查。
+		// 跳过并不意味着已经验证其他方言的 schema，也不替代调用时对具体数据的校验。
 		Assert.notNull(schema, "schema must not be null");
 		Object declaredDialect = schema.get("$schema");
 		if (declaredDialect != null && !McpSchema.JSON_SCHEMA_DIALECT_2020_12.equals(declaredDialect.toString())) {
@@ -134,6 +138,7 @@ public class DefaultJsonSchemaValidator implements JsonSchemaValidator {
 
 		// Cache the schema
 		Schema existingSchema = this.schemaCache.putIfAbsent(cacheKey, newSchema);
+		// 并发线程可能重复编译，但最终复用先写入缓存的实例；这里没有把编译过程放在互斥锁内。
 		return existingSchema != null ? existingSchema : newSchema;
 	}
 

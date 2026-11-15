@@ -41,6 +41,9 @@ import reactor.core.publisher.Mono;
  */
 public interface McpTransport {
 
+	// 中文导读：传输层负责消息收发、编码转换和连接资源；请求 id 的等待表、方法路由在会话层。
+	// sendMessage 的完成只表示发送操作完成，远端业务响应由 McpClientSession 等另外关联。
+
 	Logger logger = LoggerFactory.getLogger(McpTransport.class);
 
 	/**
@@ -52,6 +55,7 @@ public interface McpTransport {
 	 * </p>
 	 */
 	default void close() {
+		// 这里主动订阅关闭流程但不等待它结束；需要组合或等待关闭完成时使用 closeGracefully。
 		this.closeGracefully().subscribe(ignored -> {
 		}, error -> {
 			if (isPeerClosed(error)) {

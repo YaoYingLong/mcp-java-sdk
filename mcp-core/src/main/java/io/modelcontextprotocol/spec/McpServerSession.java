@@ -31,6 +31,11 @@ import reactor.core.publisher.Sinks;
  * Represents a Model Context Protocol (MCP) session on the server side. It manages
  * bidirectional JSON-RPC communication with the client.
  */
+/*
+ * stdio/旧 SSE 的一对一逻辑会话：一个 transport 同时承担请求、响应和通知的双向通道。 incoming request 按 method 找服务器提供的
+ * handler；incoming response 按 id 完成服务端反向请求。 initialize 保存客户端信息并返回协商结果，initialized 通知才发布
+ * exchangeSink，普通 handler 等待此门闩。 state 字段记录握手阶段，但当前实现仍保留多处 TODO，不能把它理解为覆盖全部非法顺序的校验器。
+ */
 public class McpServerSession implements McpLoggableSession {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpServerSession.class);
@@ -174,6 +179,9 @@ public class McpServerSession implements McpLoggableSession {
 	}
 
 	@Override
+	// 服务端反向请求：先登记等待槽再发送，以免客户端响应过快而无法匹配；send 完成只说明发送阶段完成。
+	// 真正结果由 handle 收到同 id 的 JSONRPCResponse 后写回 sink，timeout 限制等待时长。
+	// 注意本 legacy 实现没有 Streamable 版本的 doFinally 清理，勿假设两种实现生命周期完全一致。
 	public <T> Mono<T> sendRequest(String method, Object requestParams, TypeRef<T> typeRef) {
 		String requestId = this.generateRequestId();
 
@@ -216,6 +224,9 @@ public class McpServerSession implements McpLoggableSession {
 	 * @param message the incoming JSON-RPC message
 	 * @return a Mono that completes when the message is processed
 	 */
+	// transport 已完成 JSON 解码，此层不再处理 HTTP 状态码或 SSE 帧格式。
+	// 请求处理异常可转为带原 request.id 的响应；通知没有 id，不生成 JSON-RPC 响应。
+	// 从 Reactor Context 读取本次元数据，避免把后续 POST 的身份信息误用为初始化请求的上下文。
 	public Mono<Void> handle(McpSchema.JSONRPCMessage message) {
 		return Mono.deferContextual(ctx -> {
 			McpTransportContext transportContext = ctx.getOrDefault(McpTransportContext.KEY, McpTransportContext.EMPTY);
@@ -355,6 +366,7 @@ public class McpServerSession implements McpLoggableSession {
 	 * that cached exchange, and use it for a single HTTP request, with the transport
 	 * context passed in.
 	 */
+	// 复用协商得到的客户端信息与同一会话，但替换请求级上下文；并非重做握手，也不复制 transport。
 	private McpAsyncServerExchange copyExchange(McpAsyncServerExchange exchange, McpTransportContext transportContext) {
 		return new McpAsyncServerExchange(exchange.sessionId(), this, exchange.getClientCapabilities(),
 				exchange.getClientInfo(), transportContext, this.jsonSchemaValidator);
@@ -368,6 +380,8 @@ public class McpServerSession implements McpLoggableSession {
 	}
 
 	@Override
+	// onClose 由服务器注入（清理资源订阅等），错误在这里吞掉以继续关闭底层 transport。
+	// 下方 TODO 表明 pendingResponses 尚未在关闭时统一失败，关闭完成不等价于所有业务等待均已解锁。
 	public Mono<Void> closeGracefully() {
 		// TODO: clear pendingResponses and emit errors?
 		return this.onClose.get().onErrorComplete().then(this.transport.closeGracefully());

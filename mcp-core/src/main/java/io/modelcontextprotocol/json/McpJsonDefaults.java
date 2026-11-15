@@ -34,6 +34,9 @@ import io.modelcontextprotocol.util.McpServiceLoader;
  */
 public class McpJsonDefaults {
 
+	// 中文导读：默认 JSON 实现的装配入口。普通 Java 环境走 ServiceLoader，OSGi 走 supplier 注入；
+	// 实际选择和实例缓存见 McpServiceLoader。mcp-core 自身不包含 Jackson 数据绑定实现。
+
 	protected static McpServiceLoader<McpJsonMapperSupplier, McpJsonMapper> mcpMapperServiceLoader;
 
 	protected static McpServiceLoader<JsonSchemaValidatorSupplier, JsonSchemaValidator> mcpValidatorServiceLoader;
@@ -52,6 +55,7 @@ public class McpJsonDefaults {
 	}
 
 	public synchronized static McpJsonMapper getMapper() {
+		// 首次访问同时建立 mapper 和 validator 的加载器；具体实例各自在 getDefault 中延迟创建。
 		if (mcpMapperServiceLoader == null) {
 			new McpJsonDefaults();
 		}

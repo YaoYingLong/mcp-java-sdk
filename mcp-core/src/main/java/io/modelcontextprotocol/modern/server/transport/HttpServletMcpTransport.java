@@ -80,6 +80,9 @@ import reactor.core.scheduler.Schedulers;
  * @author Dariusz Jędrzejczyk
  */
 @WebServlet(asyncSupported = true)
+// Servlet 入口负责 HTTP 边界：安全/媒体类型/体积校验、解析信封、校验镜像头，最后交给 requestManager。
+// 普通请求在容器线程解析响应；Result 写 JSON，Streaming 写 SSE，错误映射 HTTP 状态。
+// 订阅是持续打开的 POST SSE，走 AsyncContext；本实现不创建 session 或可重放的 SSE event id。
 public class HttpServletMcpTransport extends HttpServlet {
 
 	private static final int DEFAULT_REQUEST_MAX_SIZE = 16 * 1024 * 1024;
@@ -253,6 +256,9 @@ public class HttpServletMcpTransport extends HttpServlet {
 		var mcpHeaders = McpHeaderDecoder.headers(headerAccessor(request));
 		transportContext = transportContext.putAll(Map.of(McpHeaders.TRANSPORT_CONTEXT_KEY, mcpHeaders));
 
+		// 普通请求显式走 handleBlocking：SyncAdapters 不切线程，仓库/工具可读取容器线程的 ThreadLocal。
+		// listen 是例外，走非阻塞 handle 并用 AsyncContext 保持长连接，避免一直占住容器请求线程。
+		// 身份仍应来自 contextExtractor；客户端发来的 clientInfo 只是展示数据。
 		boolean listen = McpSchema.METHOD_SUBSCRIPTIONS_LISTEN.equals(jsonRpcRequest.method());
 		McpTransportResponse transportResponse = (listen ? this.requestManager.handle(transportContext, jsonRpcRequest)
 				: this.requestManager.handleBlocking(transportContext, jsonRpcRequest))
@@ -275,6 +281,8 @@ public class HttpServletMcpTransport extends HttpServlet {
 		}
 	}
 
+	// 普通流式工具的同步 body 也在容器线程订阅执行；断开连接取消后，已运行的阻塞业务不能被强行终止。
+	// 因而“响应已取消”与“业务副作用已经停止”不是同一保证。
 	private void streamOnContainerThread(PrintWriter writer, McpTransportResponse.Streaming streaming) {
 		// Blocking on the container thread lets sync handlers run inside this
 		// subscription. A client disconnect fails a write and cancels the stream, but

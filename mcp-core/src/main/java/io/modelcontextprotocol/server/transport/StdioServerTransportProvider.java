@@ -39,6 +39,10 @@ import reactor.core.scheduler.Schedulers;
  *
  * @author Christian Tzolov
  */
+/*
+ * stdio 边界：单个 Provider 对应一组输入输出流和唯一 Session，按“一行 JSON-RPC”读写。 标准输出是协议通道，应用日志应走 stderr；不要在
+ * stdout 打印启动信息或调试文本。 两个单线程 Scheduler 分离读/写；消息分派使用 flatMap，不能据此推断业务处理严格串行。
+ */
 public class StdioServerTransportProvider implements McpServerTransportProvider {
 
 	private static final int DEFAULT_INPUT_MAX_SIZE = 16 * 1024 * 1024; // 16MB
@@ -102,6 +106,7 @@ public class StdioServerTransportProvider implements McpServerTransportProvider 
 	}
 
 	@Override
+	// McpAsyncServer 构造时安装工厂，这里立即创建 Session 并启动后台处理，不必再单独调用 start。
 	public void setSessionFactory(McpServerSession.Factory sessionFactory) {
 		// Create a single session for the stdio connection
 		var transport = new StdioMcpSessionTransport();
@@ -172,6 +177,7 @@ public class StdioServerTransportProvider implements McpServerTransportProvider 
 		}
 
 		@Override
+		// 等输入和输出订阅均就绪后才入队；此 Mono 完成表示已入队，不表示对端已读到或业务已处理。
 		public Mono<Void> sendMessage(McpSchema.JSONRPCMessage message) {
 
 			return Mono.zip(inboundReady.asMono(), outboundReady.asMono()).then(Mono.defer(() -> {
@@ -223,6 +229,9 @@ public class StdioServerTransportProvider implements McpServerTransportProvider 
 		 * Starts the inbound processing thread that reads JSON-RPC messages from stdin.
 		 * Messages are deserialized and passed to the session for handling.
 		 */
+		// 阻塞读在专用入站线程；readLine 逐字符限长，避免没有换行的输入无限累积。
+		// EOF、超限或解码异常都会退出循环，并在 finally 关闭会话及完成入站流。
+		// close 标志本身不会关闭外部传入的 InputStream，也不保证立即打断正阻塞的 read。
 		private void startInboundProcessing() {
 			if (isStarted.compareAndSet(false, true)) {
 				this.inboundScheduler.schedule(() -> {

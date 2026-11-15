@@ -24,6 +24,9 @@ import java.util.function.Function;
  */
 public class DefaultMcpTransportStream<CONNECTION> implements McpTransportStream<CONNECTION> {
 
+	// 中文导读：一个实例跟踪一条可恢复 SSE 流。lastId 是 SSE 事件 id，不是 JSON-RPC 请求 id；
+	// reconnect 回调由具体 transport 提供，本类只保存游标和触发恢复，不保存可回放消息。
+
 	private static final Logger logger = LoggerFactory.getLogger(DefaultMcpTransportStream.class);
 
 	private static final AtomicLong counter = new AtomicLong();
@@ -67,6 +70,8 @@ public class DefaultMcpTransportStream<CONNECTION> implements McpTransportStream
 			Publisher<Tuple2<Optional<String>, Iterable<McpSchema.JSONRPCMessage>>> eventStream) {
 
 		// @formatter:off
+		// 先记录事件 id，再展开事件中的消息。错误时另起恢复订阅，并把当前 Reactor Context 传过去；
+		// 原流仍会向下游报告错误，这不是 retry 操作符。会话已失效时不尝试恢复同一流。
 		return Flux.deferContextual(ctx -> Flux.from(eventStream)
 			.doOnNext(idAndMessage -> idAndMessage.getT1().ifPresent(id -> {
 				String previousId = this.lastId.getAndSet(id);

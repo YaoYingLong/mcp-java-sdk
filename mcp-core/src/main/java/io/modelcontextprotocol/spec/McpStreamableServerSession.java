@@ -41,6 +41,11 @@ import reactor.core.publisher.MonoSink;
  * @author Yanming Zhou
  * @author Daniel Garnier-Moiroux
  */
+/*
+ * 一个逻辑会话可跨多个 HTTP 请求与 SSE 连接。Session 保存客户端信息及所有反向请求的等待关系， 内部 Stream 保存一条实际 SSE 连接：GET
+ * 为主动通知/请求提供监听流，POST 为本次调用提供响应流。 不要把 HTTP 连接结束等同于会话结束：客户端对反向请求的响应会由另一 POST 送到
+ * accept(response)。
+ */
 public class McpStreamableServerSession implements McpLoggableSession {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpStreamableServerSession.class);
@@ -248,6 +253,7 @@ public class McpStreamableServerSession implements McpLoggableSession {
 
 	// TODO: keep track of history by keeping a map from eventId to stream and then
 	// iterate over the events using the lastEventId
+	// 当前没有事件历史实现：HTTP 层虽读取 Last-Event-ID 并调用此方法，但默认不会补发历史消息。
 	public Flux<McpSchema.JSONRPCMessage> replay(Object lastEventId) {
 		return Flux.empty();
 	}
@@ -309,6 +315,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 	 * @param response MCP response to the server-initiated request
 	 * @return Mono which completes upon successful processing
 	 */
+	// POST 携带的响应从整个会话的 pendingRequests 按 id 匹配，而不是只查当前 GET/POST 流。
+	// 这使原 SSE 连接断开后到达的迟后响应仍能完成原等待者。
 	public Mono<Void> accept(McpSchema.JSONRPCResponse response) {
 		return Mono.defer(() -> {
 			logger.debug("Received response: {}", response);
@@ -510,6 +518,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		 * @param jsonrpcRequest the MCP request this stream carries the response of
 		 * @return Mono which completes once the processing is done
 		 */
+		// 每个普通 POST 在自己的响应流中执行 handler；Exchange 绑定 this 流，业务反向请求也写入同一流。
+		// usingWhen 在结果、错误或取消后关闭流；最终 JSON-RPC response 是本次调用的结束标志。
 		public Mono<Void> handle(McpSchema.JSONRPCRequest jsonrpcRequest) {
 			// The stream is released whichever way the request ends: with a response, on
 			// an error, or by the caller giving up on it
@@ -594,6 +604,8 @@ public class McpStreamableServerSession implements McpLoggableSession {
 		 * than the end of the session: an SSE stream going away, whether replaced,
 		 * disconnected or timed out, does not invalidate the requests sent on it.
 		 */
+		// 连接释放与协议关闭刻意分开：这里只移除活跃连接并关闭 I/O，保留尚待另一 POST 回答的请求。
+		// close/closeGracefully 则会主动失败化该流的等待请求；整个会话关闭会再清理所有遗留等待。
 		public void releaseTransport() {
 			McpStreamableServerSession.this.openStreams.remove(this);
 			// If this was the generic stream, reset it

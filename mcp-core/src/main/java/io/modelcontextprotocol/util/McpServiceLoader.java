@@ -45,11 +45,15 @@ public class McpServiceLoader<S extends Supplier<R>, R> {
 	}
 
 	protected Optional<S> serviceLoad(Class<S> type) {
+		// 普通 JVM 使用 ServiceLoader 的默认类加载机制查找 provider；这里只取第一个实现。
+		// 若同时放入多个 JSON provider，不应把 classpath 中的发现顺序当作显式的版本选择配置。
 		return ServiceLoader.load(type).findFirst();
 	}
 
 	@SuppressWarnings("unchecked")
 	public synchronized R getDefault() {
+		// 同一加载器缓存 supplier 及其产物，避免每次取默认 mapper 都重新构建。
+		// setSupplier/unsetSupplier 会清空产物缓存，供 OSGi 服务绑定变化后重新获取。
 		if (this.supplierResult == null) {
 			if (this.supplier == null) {
 				// Use serviceloader

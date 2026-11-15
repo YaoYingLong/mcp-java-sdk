@@ -38,6 +38,12 @@ import org.slf4j.LoggerFactory;
  */
 public final class McpSchema {
 
+	// 中文导读：传统会话式 API 的线上数据模型；modern/McpSchema 是另一套模型，不要混用导入。
+	// 建议先读三类 JSONRPC 消息，再读 InitializeRequest/Result 和 tools 相关 record，
+	// 最后按业务补读 resources、prompts、sampling、elicitation。此类描述数据，真正执行在 client/server。
+	// record 的 @JsonProperty 对应线上字段；可选字段的 null 通常表示“缺省”，不能随意改成空值。
+	// fromJson 的兼容默认值与 Java 构造器校验分工不同，具体行为要逐 record 查看。
+
 	private static final Logger logger = LoggerFactory.getLogger(McpSchema.class);
 
 	private McpSchema() {
@@ -178,6 +184,7 @@ public final class McpSchema {
 	public interface Request extends Meta {
 
 		default Object progressToken() {
+			// progressToken 由业务请求的 _meta 携带，用于关联进度通知；它不等同于外层 JSON-RPC id。
 			if (meta() != null && meta().containsKey("progressToken")) {
 				return meta().get("progressToken");
 			}
@@ -212,6 +219,9 @@ public final class McpSchema {
 		logger.debug("Received JSON message: {}", jsonText);
 
 		var map = jsonMapper.readValue(jsonText, MAP_TYPE_REF);
+
+		// 先判定外层信封，再把 params/result 留给具体 handler 按方法转换。
+		// 判断依据是字段“存在”，不是字段值非 null；例如带 id:null 的对象仍走请求解析并触发构造校验。
 
 		// Determine message type based on specific JSON structure
 		if (map.containsKey("method") && map.containsKey("id")) {
@@ -258,6 +268,7 @@ public final class McpSchema {
 		 * MUST NOT be null
 		 */
 		public JSONRPCRequest {
+			// Object id 是为兼容字符串和整数两种线上表示，不代表允许任意对象；构造器统一约束其类型。
 			Assert.hasText(jsonrpc, "jsonrpc must not be empty");
 			Assert.notNull(id, "MCP requests MUST include an ID - null IDs are not allowed");
 			Assert.isTrue(id instanceof String || id instanceof Integer || id instanceof Long,
@@ -319,6 +330,8 @@ public final class McpSchema {
 		@JsonProperty("error") JSONRPCError error) implements JSONRPCMessage { // @formatter:on
 
 		public JSONRPCResponse {
+			// 响应复用原请求 id，让会话从 pendingResponses/pendingRequests 找到等待者。
+			// 当前实现要求 result/error 恰有一个非 null；业务级 isError 则属于 result 内部字段。
 			Assert.hasText(jsonrpc, "jsonrpc must not be empty");
 			Assert.notNull(id, "MCP responses MUST include an ID - null IDs are not allowed");
 			Assert.isTrue(id instanceof String || id instanceof Integer || id instanceof Long,
@@ -394,6 +407,8 @@ public final class McpSchema {
 				@JsonProperty("capabilities") ClientCapabilities capabilities,
 				@JsonProperty("clientInfo") Implementation clientInfo,
 				@JsonProperty("_meta") Map<String, Object> meta) {
+			// 反序列化入口对缺失的必填字段补兼容默认值并告警，随后仍经过 record 构造器。
+			// 因此“能从 JSON 构造对象”不等于“初始化已成功”，版本协商和能力判断仍由客户端/服务端执行。
 			if (protocolVersion == null || capabilities == null || clientInfo == null) {
 				List<String> missing = new ArrayList<>();
 				if (protocolVersion == null) {
@@ -2927,6 +2942,8 @@ public final class McpSchema {
 		@JsonProperty("icons") List<Icon> icons) { // @formatter:on
 
 		public Tool {
+			// Tool 是对外展示的定义：名称、说明、输入/输出 schema；它不保存实际的 Java 调用函数。
+			// 回调与定义的绑定见 McpServerFeatures.AsyncToolSpecification/SyncToolSpecification。
 			Assert.notNull(name, "name must not be null");
 			Assert.notNull(inputSchema, "inputSchema must not be null");
 		}
@@ -3146,6 +3163,8 @@ public final class McpSchema {
 		static CallToolRequest fromJson(@JsonProperty("name") String name,
 				@JsonProperty("arguments") Map<String, Object> arguments,
 				@JsonProperty("_meta") Map<String, Object> meta) {
+			// 这里缺失 name 会补空字符串，不能据此认为工具存在；服务端之后按 name 查找 specification。
+			// arguments 是 Java Map，是否符合工具 inputSchema 是 ToolInputValidator 的职责。
 			if (name == null) {
 				logger.warn("CallToolRequest: missing required field 'name' during deserialization, using default ''");
 				name = "";
@@ -3264,6 +3283,8 @@ public final class McpSchema {
 		@JsonProperty("_meta") Map<String, Object> meta) implements Result { // @formatter:on
 
 		public CallToolResult {
+			// content 是供模型/用户读取的内容块；structuredContent 是供程序处理的结构化结果。
+			// isError=true 仍可以作为 JSON-RPC 的正常 result 返回，表示工具执行层面的失败。
 			Assert.notNull(content, "content must not be null");
 		}
 
@@ -5216,6 +5237,7 @@ public final class McpSchema {
 		 * Creates a new paginated request with an empty cursor.
 		 */
 		public PaginatedRequest() {
+			// 首次查询没有 cursor；后续查询应原样传回服务端给出的 nextCursor，不把它当页码解析。
 			this(null);
 		}
 	}
@@ -5930,6 +5952,9 @@ public final class McpSchema {
 			@JsonSubTypes.Type(value = EmbeddedResource.class, name = "resource"),
 			@JsonSubTypes.Type(value = ResourceLink.class, name = "resource_link") })
 	public interface Content extends Meta {
+
+		// 多态内容靠线上 type 字段选择具体 record。它与 ResourceContents 的字段推断机制不同；
+		// 后者通过 text/blob 等字段区分文本和二进制资源，不能把两种多态反序列化混为一谈。
 
 		@JsonIgnore
 		default String type() {

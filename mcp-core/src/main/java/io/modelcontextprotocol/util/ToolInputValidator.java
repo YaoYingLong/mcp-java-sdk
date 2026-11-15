@@ -36,12 +36,16 @@ public final class ToolInputValidator {
 	 */
 	public static CallToolResult validate(McpSchema.Tool tool, Map<String, Object> arguments,
 			boolean validateToolInputs, JsonSchemaValidator validator) {
+		// 中文导读：返回 null 表示允许继续调用工具（校验通过或被跳过），不是“工具返回空结果”。
+		// 是否启用校验由服务端配置决定；arguments 缺省时以空对象匹配 inputSchema。
 		if (!validateToolInputs || tool.inputSchema() == null || tool.inputSchema().isEmpty() || validator == null) {
 			return null;
 		}
 		Map<String, Object> args = arguments != null ? arguments : Map.of();
 		var validation = validator.validate(tool.inputSchema(), args);
 		if (!validation.valid()) {
+			// 参数不符合工具 schema 时返回工具级 isError 结果，仍通过 JSON-RPC result 发送。
+			// 这与未知方法等 JSON-RPC error 不同，调用方不能只检查是否抛异常来判断工具成功。
 			String message = "Tool (" + tool.name() + ") input validation failed: " + validation.errorMessage();
 			logger.warn(message);
 			return CallToolResult.builder()

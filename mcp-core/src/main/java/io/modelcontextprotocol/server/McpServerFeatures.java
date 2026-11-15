@@ -24,6 +24,12 @@ import reactor.core.scheduler.Schedulers;
  * @author Dariusz Jędrzejczyk
  * @author Jihoon Kim
  */
+/*
+ * 配置数据与业务函数的绑定层：Tool/Resource/Prompt 描述会进入协议响应，handler 留在本地执行。 Async/Sync
+ * 是构建时内部配置；AsyncToolSpecification 等公开类型供应用注册功能。 能力配置为空时才按已有 tools/resources/prompts
+ * 推导默认能力；显式 capabilities 会被保留， 因而“注册了工具”与“启用了 tools 协议路由”要结合
+ * McpAsyncServer.prepareRequestHandlers 阅读。
+ */
 public class McpServerFeatures {
 
 	/**
@@ -106,6 +112,8 @@ public class McpServerFeatures {
 		 * @return a specification which is protected from blocking calls specified by the
 		 * user.
 		 */
+		// 这里转换的是回调执行方式，而不是另造一套同步协议实现。
+		// 工具、资源、Prompt、Completion 分别委托各自 fromSync；roots 变更消费者则始终卸载到 boundedElastic。
 		static Async fromSync(Sync syncSpec, boolean immediateExecution) {
 			List<McpServerFeatures.AsyncToolSpecification> tools = new ArrayList<>();
 			for (var tool : syncSpec.tools()) {
@@ -252,6 +260,9 @@ public class McpServerFeatures {
 
 			BiFunction<McpAsyncServerExchange, McpSchema.CallToolRequest, Mono<McpSchema.CallToolResult>> callHandler = (
 					exchange, req) -> {
+				// fromCallable 确保订阅时才调用业务函数，并把抛出的异常变为错误信号。
+				// 默认 subscribeOn(boundedElastic) 避免阻塞传输执行线程；immediate=true 使用订阅所在的线程。
+				// 这不提供业务串行保证，不同请求仍可能并发进入同一个 handler。
 				var toolResult = Mono
 					.fromCallable(() -> syncToolSpec.callHandler().apply(new McpSyncServerExchange(exchange), req));
 				return immediate ? toolResult : toolResult.subscribeOn(Schedulers.boundedElastic());

@@ -73,6 +73,11 @@ import reactor.core.publisher.Mono;
  */
 @Deprecated
 @WebServlet(asyncSupported = true)
+/*
+ * 旧 HTTP+SSE：GET 打开服务器到客户端的长连接，并用 endpoint 事件告知客户端 POST 地址。 客户端向该地址 POST 单条消息；JSON-RPC
+ * 响应通过既有 GET SSE 发回，POST 的状态只是接收结果。 sessions 的键是传输生成的 ID，McpServerSession.getId()
+ * 则由服务器工厂生成，二者不能混用。 此实现只声明 2024-11-05 版本；Streamable HTTP 是另一 Provider，不应套用其 Header 寻址规则。
+ */
 public class HttpServletSseServerTransportProvider extends HttpServlet implements McpServerTransportProvider {
 
 	/**
@@ -382,6 +387,7 @@ public class HttpServletSseServerTransportProvider extends HttpServlet implement
 			return;
 		}
 
+		// 这里读 endpoint 事件 URL 中的 sessionId 查询参数，而不是 mcp-session-id Header。
 		// Get the session ID from the request parameter
 		String sessionId = request.getParameter("sessionId");
 		if (sessionId == null) {
@@ -456,6 +462,8 @@ public class HttpServletSseServerTransportProvider extends HttpServlet implement
 	 * @return A Mono that completes when all sessions have been closed
 	 */
 	@Override
+	// 旧 SSE 此处先立即置关闭标志，订阅返回的链后才逐会话关闭连接、清表并停止保活。
+	// 与 Streamable HTTP 保留会话/替换单条连接的模型不同，当前 GET 就是这个会话的下行传输。
 	public Mono<Void> closeGracefully() {
 		isClosing.set(true);
 		logger.debug("Initiating graceful shutdown with {} active sessions", sessions.size());

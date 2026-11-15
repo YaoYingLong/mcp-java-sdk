@@ -82,6 +82,11 @@ import reactor.util.retry.Retry;
  * "https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http">Streamable
  * HTTP transport specification</a>
  */
+// Streamable HTTP 的传输适配：每条出站消息发 POST，同一端点的 GET 可承载服务端
+// 主动消息或 SSE 恢复；POST 响应自身也可能是 SSE，而非一次性 JSON。
+// activeSession 管理 HTTP 会话 ID 和各 HTTP 交换的 Disposable；它与上层
+// McpClientSession 中“JSON-RPC 请求 ID -> 响应 sink”的关联表职责不同。
+// 这里只处理 HTTP/SSE、认证重试和传输会话失效，协议握手由 LifecycleInitializer 完成。
 public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	private static final Logger logger = LoggerFactory.getLogger(HttpClientStreamableHttpTransport.class);
@@ -208,6 +213,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	@Override
 	public Mono<Void> connect(Function<Mono<McpSchema.JSONRPCMessage>, Mono<McpSchema.JSONRPCMessage>> handler) {
+		// 默认主要是注册入站回调；只有 openConnectionOnStartup 才提前发起 GET。
+		// 提前 GET 失败在此被记录并吞掉，connect 完成不表示 MCP initialize 已成功。
 		return Mono.defer(() -> {
 			this.handler.set(handler);
 			if (this.openConnectionOnStartup) {
@@ -257,6 +264,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	}
 
 	private void handleException(Throwable t) {
+		// 服务端不认识当前 HTTP 会话时先换成新传输会话并关闭旧连接，
+		// 再通知上层初始化器清理旧 RPC 等待者并重新握手；普通错误不触发这一整套重建。
 		logger.debug("Handling exception for session {}", sessionIdOrPlaceholder(
 				activeSession.get() != null ? activeSession.get().sessionId() : Optional.empty()), t);
 		if (t instanceof McpTransportSessionNotFoundException) {
@@ -281,6 +290,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 	@Override
 	public Mono<Void> closeGracefully() {
+		// 原子换成 Closed 哨兵阻止新交换；原会话关闭时取消其登记的 HTTP 连接，
+		// 并通过 createTransportSession 提供的 onClose 在有会话 ID 时发送 DELETE。
 		return Mono.defer(() -> {
 			logger.debug("Graceful close triggered");
 			McpTransportSession<Disposable> currentSession = this.activeSession
@@ -298,6 +309,9 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	 */
 	private Flux<Optional<McpSchema.JSONRPCMessage>> consumeSseStream(Flow.Publisher<List<ByteBuffer>> body,
 			McpTransportStream<Disposable> existingStream) {
+		// HTTP 分块 -> UTF-8 行 -> SSE 事件 -> JSON-RPC。
+		// Optional.empty 保留“事件已到达但不含协议消息”的信号，例如服务端 primer；
+		// 发送阶段可据此完成，后续再过滤掉空值，避免把空事件交给会话层。
 		Flux<String> lines = ResponseBodyHandlers.decodeLines(body, this.maxResponseSize);
 		return ResponseBodyHandlers.decodeSseResponse(lines, this.maxResponseSize).flatMap(sseEvent -> {
 			if (!isMessageEvent(sseEvent.event())) {
@@ -325,6 +339,10 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	}
 
 	private Mono<Disposable> reconnect(McpTransportStream<Disposable> stream) {
+		// 此方法建立 GET SSE 交换，不重新发送 initialize 或业务 POST。
+		// 有既存流时把 lastId 放进 Last-Event-ID；是否安排流恢复由 McpTransportStream
+		// 的实现决定，不能把本方法名理解成所有网络错误都无限重试。
+		// GET 的长订阅在内部保存到传输会话，返回值表示其 Disposable，而非整个流结束。
 		return Mono.deferContextual(ctx -> {
 			var rh = this.handler.get();
 			if (rh == null) {
@@ -438,6 +456,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	}
 
 	private Retry authorizationErrorRetrySpec() {
+		// 仅重试特定认证异常，次数受 handler.maxRetries 限制且需处理器返回 true。
+		// 每次重新订阅会重新构造请求并调用 customizer，允许刷新凭据后重新附加请求头。
 		return Retry.from(companion -> companion.flatMap(retrySignal -> {
 			if (!(retrySignal.failure() instanceof McpHttpClientTransportAuthorizationException authException)) {
 				return Mono.error(retrySignal.failure());
@@ -467,6 +487,9 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	}
 
 	public Mono<Void> sendMessage(McpSchema.JSONRPCMessage sentMessage) {
+		// 外层 Mono 在订阅时启动内部 HTTP 长交换。返回 Mono 的“发送完成”由首个信号
+		// 决定，内部流仍可继续接收 SSE 并调用 requestHandler；它不是 RPC 返回值本身。
+		// RPC response 无论来自 POST 还是 GET，最终都进入同一个会话层按 ID 匹配。
 		return Mono.create(deliveredSink -> {
 			var rh = this.handler.get();
 			if (rh == null) {
@@ -523,6 +546,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 
 					if (transportSession
 						.markInitialized(httpResponse.headers().firstValue("mcp-session-id").orElse(null))) {
+						// 首次登记 HTTP 响应中的会话 ID 后启动 GET；协议 InitializeResult
+						// 还需在响应体中解析并由上层验证，两个 initialized 的含义不同。
 						// Fails only when the transport has been closed in the meantime,
 						// in which case there is no stream left to open.
 						reconnect(null).contextWrite(deliveredSink.contextView()).subscribe(ignored -> {
@@ -542,6 +567,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 					String contentLength = httpResponse.headers().firstValue(HttpHeaders.CONTENT_LENGTH).orElse(null);
 
 					if (contentType.isBlank() || "0".equals(contentLength) || statusCode == 202) {
+						// 消息被 HTTP 接受但没有 JSON-RPC 消息：排空响应体释放连接。
+						// 对 notification 这是正常发送结果；request 仍等待会话层收到对应 ID。
 						logger.debug("No body returned for POST in session {}", sessionRepresentation);
 						return ResponseBodyHandlers.<Optional<McpSchema.JSONRPCMessage>>drain(httpResponse.body(),
 								this.maxResponseSize)
@@ -635,6 +662,8 @@ public class HttpClientStreamableHttpTransport implements McpClientTransport {
 	 * body, which is what the server said about it.
 	 */
 	private <T> Flux<T> statusError(HttpRequest request, HttpResponse<Flow.Publisher<List<ByteBuffer>>> response) {
+		// 400/404 只有在“这次请求实际携带会话 ID”时才按会话失效处理。
+		// 未携带 ID 的 404 是端点错误，不能因此无条件启动重新初始化循环。
 		int statusCode = response.statusCode();
 		// Classify the response against the session id that this very request carried,
 		// rather than the one currently held by the session, which can be established

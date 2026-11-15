@@ -25,6 +25,8 @@ public abstract class TypeRef<T> {
 	 * information
 	 */
 	protected TypeRef() {
+		// 匿名子类把 List<Tool> 这样的具体泛型保存在父类签名中，弥补 List.class 丢失元素类型的问题。
+		// 因此调用处写 new TypeRef<List<Tool>>() {}，mapper 再把这里的 Type 转为自身的类型描述。
 		Type superClass = getClass().getGenericSuperclass();
 		if (superClass instanceof Class) {
 			throw new IllegalStateException("TypeRef constructed without actual type information");

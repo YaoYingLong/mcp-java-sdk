@@ -38,6 +38,9 @@ import java.util.function.Function;
  * @author Dariusz Jędrzejczyk
  * @author Yanming Zhou
  */
+// 客户端 JSON-RPC 分发中心：收到 response 按 ID 唤醒发起方，收到 request 按 method
+// 调用客户端处理器并回写 response，收到 notification 则执行无响应的处理器。
+// 它不解释 tools 等业务语义，也不保存 HTTP 的 Mcp-Session-Id；两个“会话”属于不同层。
 public class McpClientSession implements McpSession {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpClientSession.class);
@@ -120,6 +123,8 @@ public class McpClientSession implements McpSession {
 		this.requestHandlers.putAll(requestHandlers);
 		this.notificationHandlers.putAll(notificationHandlers);
 
+		// 构造会话即订阅连接；connectHook 可在订阅前恢复初始化调用方的 Context。
+		// 这里只记录连接错误，协议握手仍通过后续 initialize RPC 的结果判断成功与否。
 		this.transport.connect(mono -> mono.doOnNext(this::handle)).transform(connectHook).subscribe(ignored -> {
 		}, error -> logger.warn("Client failed during connect", error));
 	}
@@ -133,6 +138,8 @@ public class McpClientSession implements McpSession {
 	}
 
 	private void handle(McpSchema.JSONRPCMessage message) {
+		// 此入口由传输的入站流驱动。下面对反向 request/notification 单独 subscribe，
+		// 所以接收入口不阻塞等待处理器完成；处理器也不因此自动换到另一个线程。
 		if (message instanceof McpSchema.JSONRPCResponse response) {
 			logger.debug("Received response: {}", response);
 			if (response.id() != null) {
@@ -261,8 +268,15 @@ public class McpClientSession implements McpSession {
 	 */
 	@Override
 	public <T> Mono<T> sendRequest(String method, Object requestParams, TypeRef<T> typeRef) {
+		// ID 在调用本方法时生成，登记 sink 和发送则在订阅时发生。
+		// 同一个返回 Mono 被多次订阅会复用这个 ID；它不是可随意重放的请求缓存。
 		String requestId = this.generateRequestId();
 
+		// 必须先登记再发送，才能接住很快返回的响应。这里内部订阅发送 Mono，
+		// 并显式传递外层 Context，避免 HTTP 请求定制器丢失调用方上下文。
+		// sendMessage 完成只表示传输发送阶段完成；RPC 的结果由入站 response 完成 sink。
+		// timeout 限制调用方等待；本实现没有在取消/超时回调里移除 pendingResponses，
+		// 也没有发送协议取消通知。表项在响应到达、发送失败或会话关闭时清理。
 		return Mono.deferContextual(ctx -> Mono.<McpSchema.JSONRPCResponse>create(pendingResponseSink -> {
 			logger.debug("Sending message for method {}", method);
 			this.pendingResponses.put(requestId, pendingResponseSink);
@@ -307,6 +321,8 @@ public class McpClientSession implements McpSession {
 	 */
 	@Override
 	public Mono<Void> closeGracefully() {
+		// 实际行为是让全部待响应请求立即以错误结束，不是等待它们自然完成。
+		// transport 的物理关闭由 McpAsyncClient 接着执行。
 		return Mono.fromRunnable(this::dismissPendingResponses);
 	}
 

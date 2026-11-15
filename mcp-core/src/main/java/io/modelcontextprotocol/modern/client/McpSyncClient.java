@@ -76,6 +76,9 @@ import reactor.core.publisher.Mono;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 同步 API 与异步 API 具有相同的不可变 spec 和协议语义，但不是对整个异步调用简单 block()。
+// SyncClientRequester 在调用者线程逐轮等待，输入处理器也在该线程执行，保留应用的 ThreadLocal。
+// transport 仍可在其他线程完成 I/O；进度回调另走允许阻塞的线程，不保证回到调用者线程。
 public final class McpSyncClient {
 
 	private final SyncClientRequester requester;
@@ -494,6 +497,8 @@ public final class McpSyncClient {
 		 * Calls the tool and returns its result, answering the server's input requests
 		 * along the way.
 		 */
+		// 等待完整逻辑调用：可能包含多个 JSON-RPC 往返和用户输入，返回类型只有最终 CallToolResult。
+		// 与之相对，callOnce() 的 CallToolOutcome 还可能是 InputRequiredResult，轮次由应用继续驱动。
 		public CallToolResult call() {
 			return this.requester.callTool(this.name, request(), this.settings, this.definition);
 		}

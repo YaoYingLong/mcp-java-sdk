@@ -21,6 +21,9 @@ import org.slf4j.LoggerFactory;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 只描述信封，不描述工具/资源等业务结果：method/id/params 用于请求，result/error 用于响应。
+// 反序列化先检查 JSON 对象形状，再绑定 record；业务 params/result 仍保持 Object，由后续层按方法解码。
+// 读源码时先分清三层：JSON 文本 -> JSON-RPC 信封 -> McpSchema 的业务数据。
 public final class JsonRpc {
 
 	private static final Logger logger = LoggerFactory.getLogger(JsonRpc.class);
@@ -45,6 +48,8 @@ public final class JsonRpc {
 			throw new InvalidMessageException("A JSON-RPC message must be a JSON object", null, null);
 		}
 
+		// 是否“存在 id 字段”区分请求和通知；显式 id:null 仍走请求绑定并被构造器拒绝。
+		// JSON 语法损坏由 mapper 抛 IOException；合法 JSON 但信封不合法归 InvalidMessageException。
 		Class<? extends JSONRPCMessage> type;
 		if (map.containsKey("method") && map.containsKey("id")) {
 			type = JSONRPCRequest.class;

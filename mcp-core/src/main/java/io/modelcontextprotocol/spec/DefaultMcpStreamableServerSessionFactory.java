@@ -92,6 +92,8 @@ public class DefaultMcpStreamableServerSessionFactory implements McpStreamableSe
 	}
 
 	@Override
+	// 初始化分两部分返回：立即创建逻辑会话和 ID；协商结果保留为 Mono，由 HTTP 层订阅并写回初始化 POST。
+	// 此时尚无 SSE 连接；onClose 捕获同一个 ID，供服务器清理该会话对应的业务订阅。
 	public McpStreamableServerSession.McpStreamableServerSessionInit startSession(
 			McpSchema.InitializeRequest initializeRequest) {
 		String sessionId = UUID.randomUUID().toString();

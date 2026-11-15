@@ -20,6 +20,7 @@ class DefaultMcpTransportContext implements McpTransportContext {
 	private final Map<String, Object> metadata;
 
 	DefaultMcpTransportContext(Map<String, ?> metadata) {
+		// 复制 Map 使后续增删键不影响本次上下文；这是浅复制，value 所指向的业务对象并未深度冻结。
 		Assert.notNull(metadata, "The metadata cannot be null");
 		this.metadata = Map.copyOf(metadata);
 	}

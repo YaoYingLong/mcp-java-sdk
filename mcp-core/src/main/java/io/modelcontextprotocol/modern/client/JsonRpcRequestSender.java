@@ -41,6 +41,9 @@ import reactor.core.publisher.Mono;
  * {@code _meta}, the round timeout, progress, and the mapping of error answers. Shared by
  * every call and listen stream of a client.
  */
+// 一轮 JSON-RPC 的边界：生成新 id、装配 _meta、调用 transport.exchange，消费进度并提取响应。
+// MultiRoundTripRequest 管业务上的多轮；这里的重试只处理不支持版本这一种协议协商。
+// id/token 用 JVM 级计数器，避免多个客户端共享 STDIO transport 时响应或进度被错误关联。
 final class JsonRpcRequestSender {
 
 	private static final Logger logger = LoggerFactory.getLogger(JsonRpcRequestSender.class);
@@ -158,6 +161,9 @@ final class JsonRpcRequestSender {
 	 * Runs {@code exchange} with the current version; a {@code -32022} answer is retried
 	 * once with the newest version both sides support, which is kept for later requests.
 	 */
+	// 先按本客户端已知版本发送；仅 -32022 才从服务端 supported 中选择本地支持列表的首个交集。
+	// 选中版本保存在 sender 中供后续调用使用，但不是建立会话，也不是重新初始化服务器。
+	// 协商最多重发一次；本 checkout 默认支持列表仅含当前 modern 版本，不能据此兼容 legacy 握手。
 	private <T> Flux<T> renegotiated(Function<String, Flux<T>> exchange) {
 		return Flux.defer(() -> exchange.apply(this.protocolVersion).onErrorResume(UnsupportedVersion.class, ex -> {
 			String retryVersion = negotiate(ex.error);
@@ -197,6 +203,8 @@ final class JsonRpcRequestSender {
 		});
 	}
 
+	// 每轮（包括协商重试）都是新 JSON-RPC 请求；业务参数保留，_meta 和 id 重新生成。
+	// 输入响应的 key 对应的是 inputRequests 的 key，与这里的 JSON-RPC id 属于不同关联层次。
 	private JSONRPCRequest message(String method, Map<String, Object> params, Map<String, Object> applicationMeta,
 			ClientCapabilities capabilities, @Nullable Long progressToken, String version) {
 		Map<String, Object> meta = RequestMeta.merged(applicationMeta,

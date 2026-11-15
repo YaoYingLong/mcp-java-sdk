@@ -14,6 +14,11 @@ import reactor.core.publisher.Mono;
 import java.util.Map;
 import java.util.Objects;
 
+/*
+ * 无状态消息分派器：不创建 Session/Exchange，不保存客户端握手状态，直接用本次 transportContext 调业务。
+ * 只负责 method 路由及将结果/异步错误封装为 JSON-RPCResponse；HTTP 状态与响应输出交给 transport。
+ * 显式 McpError 保留协议码，普通异常转 INTERNAL_ERROR；通知没有协议响应，未知通知仅记录日志。
+ */
 class DefaultMcpStatelessServerHandler implements McpStatelessServerHandler {
 
 	private static final Logger logger = LoggerFactory.getLogger(DefaultMcpStatelessServerHandler.class);

@@ -13,6 +13,9 @@ import java.util.Map;
  */
 public interface JsonSchemaValidator {
 
+	// 中文导读：validateSchema 校验“规则本身是否合法”，validate 校验“数据是否符合规则”。
+	// 前者通常发生在工具注册时，后者发生在调用的输入或输出处理时，不能互相替代。
+
 	/**
 	 * Asserts that the given schema document is a structurally valid JSON Schema. Schemas
 	 * without an explicit {@code $schema} declaration, or those that declare JSON Schema

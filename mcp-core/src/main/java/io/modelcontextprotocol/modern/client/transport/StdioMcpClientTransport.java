@@ -70,6 +70,9 @@ import reactor.core.scheduler.Schedulers;
  * @see <a href=
  * "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio">stdio</a>
  */
+// 以 UTF-8 一行一个 JSON-RPC 消息复用同一对流；请求 id 关联响应，progressToken 关联进度。
+// transport 可托管子进程或使用外部流；start 才建立读取循环，client.build 自身不启动进程。
+// reader/writer 各自串行调度，避免读阻塞调用线程以及多个调用写出交错的 JSON 行。
 public final class StdioMcpClientTransport implements McpClientTransport, AutoCloseable {
 
 	private static final Logger logger = LoggerFactory.getLogger(StdioMcpClientTransport.class);
@@ -231,6 +234,8 @@ public final class StdioMcpClientTransport implements McpClientTransport, AutoCl
 				sink.error(new IllegalStateException("Progress token " + progressToken + " is still in use"));
 				return;
 			}
+			// 先登记在途请求再写出，响应再快也能关联；取消只有成功移除登记的一方发送通知。
+			// 超时取消订阅同样进入此处；服务器执行能否及时停止取决于其处理器是否支持取消。
 			sink.onCancel(() -> {
 				if (unregister(exchange)) {
 					sendCancelled(message.id());
@@ -341,6 +346,8 @@ public final class StdioMcpClientTransport implements McpClientTransport, AutoCl
 		}
 	}
 
+	// STDIO 没有独立 HTTP 响应流边界，通知必须自带关联信息：进度用 token，订阅用 _meta 的 id。
+	// 无法归属在途请求的通知丢弃；服务器反向 JSON-RPC request 也不会作为输入请求执行。
 	private Exchange exchangeOf(JSONRPCNotification notification) {
 		if (!(notification.params() instanceof Map<?, ?> params)) {
 			return null;

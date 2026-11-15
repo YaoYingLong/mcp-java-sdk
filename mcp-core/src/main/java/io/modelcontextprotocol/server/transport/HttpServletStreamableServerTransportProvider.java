@@ -65,6 +65,12 @@ import reactor.core.scheduler.Schedulers;
  * @see HttpServlet
  */
 @WebServlet(asyncSupported = true)
+/*
+ * Streamable HTTP 的 Servlet 适配：同一 mcpEndpoint 由 HTTP 动词和消息类型分路。 POST initialize 创建会话并返回
+ * mcp-session-id；普通 POST 请求建立本次 SSE 响应流； POST 响应/通知交给 session.accept 并返回 202；GET 建立可选的长期
+ * SSE 监听流；DELETE 删除会话。 此处负责 HTTP 校验、会话寻址与连接所有权，方法对应的业务路由仍在 McpAsyncServer。 使用 Servlet
+ * AsyncContext 管理连接并不等于全链路非阻塞：多处 block() 仍等待响应式处理完成。
+ */
 public class HttpServletStreamableServerTransportProvider extends HttpServlet
 		implements McpStreamableServerTransportProvider {
 
@@ -236,6 +242,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 	 * reconnect to a session, so nothing else ever reclaims it.
 	 * @return a Mono completing once every evicted session has been closed
 	 */
+	// 按一个扫描周期交换活动 ID 集合：仍有任意开放流，或上个周期收到请求的会话都会保留。
+	// 仅空闲且无连接者被条件 remove 后关闭；这是会话回收策略，不是从最后一次请求起的精确超时。
 	private Mono<Void> sweepSessions() {
 		if (this.isClosing) {
 			return Mono.empty();
@@ -336,6 +344,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 	 * @return A Mono that completes when all cleanup operations are finished
 	 */
 	@Override
+	// Provider 拥有会话表、保活器和清扫任务；订阅关闭后拒绝新请求，关闭各会话，再停后台任务。
+	// 不是等待任意业务无限执行完毕的全局屏障，具体流与待响应请求由 Session 的关闭语义处理。
 	public Mono<Void> closeGracefully() {
 		return Mono.fromRunnable(() -> {
 			this.isClosing = true;
@@ -371,6 +381,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 	 * @throws IOException If an I/O error occurs
 	 */
 	@Override
+	// GET 不创建会话，必须使用初始化获得的 mcp-session-id。客户端可以只发 POST 而从不建立 GET。
+	// 新 GET 替换旧监听连接；AsyncListener 的释放回调只断开流，保留逻辑会话与待匹配请求。
 	protected void doGet(HttpServletRequest request, HttpServletResponse response)
 			throws ServletException, IOException {
 
@@ -482,6 +494,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 	 * @throws IOException If an I/O error occurs
 	 */
 	@Override
+	// HTTP 外层先校验路径、关闭状态、头和大小，再反序列化 JSON-RPC；初始化是无需已有会话 ID 的特殊分支。
+	// Content-Length 预检查之外，readBody 继续约束实际读取字节，覆盖 chunked/长度未知的输入。
 	protected void doPost(HttpServletRequest request, HttpServletResponse response)
 			throws ServletException, IOException {
 
@@ -546,6 +560,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 				McpSchema.InitializeRequest initializeRequest = jsonMapper.convertValue(jsonrpcRequest.params(),
 						new TypeRef<McpSchema.InitializeRequest>() {
 						});
+				// 工厂只构建逻辑会话，初始化响应直接返回 application/json，不需要先打开 GET SSE。
+				// 后续请求用返回的 Header ID 查 sessions；与 legacy SSE 的 URL 查询参数机制不同。
 				McpStreamableServerSession.McpStreamableServerSessionInit init = this.sessionFactory
 					.startSession(initializeRequest);
 				this.markSessionActive(init.session().getId());
@@ -703,6 +719,8 @@ public class HttpServletStreamableServerTransportProvider extends HttpServlet
 	 * @throws IOException If an I/O error occurs
 	 */
 	@Override
+	// DELETE 结束逻辑会话：关闭全部连接、失败化等待响应的请求，再从 Provider 的会话表移除。
+	// 这与客户端单条 SSE 连接断开时的 releaseTransport 语义不同。
 	protected void doDelete(HttpServletRequest request, HttpServletResponse response)
 			throws ServletException, IOException {
 

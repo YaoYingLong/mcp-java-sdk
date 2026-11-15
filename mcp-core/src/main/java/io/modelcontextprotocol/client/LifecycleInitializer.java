@@ -75,6 +75,9 @@ import reactor.util.context.ContextView;
  * the initialized notification</li>
  * </ul>
  */
+// 中文导读：本类将“尚未初始化 / 正在初始化 / 已得到结果”收敛到一个原子引用。
+// 每轮 DefaultInitialization 绑定自己的会话、结果缓存及一次性完成信号；业务调用通过
+// withInitialization 共享这一轮握手，而不是每次操作重新发 initialize。
 class LifecycleInitializer {
 
 	private static final Logger logger = LoggerFactory.getLogger(LifecycleInitializer.class);
@@ -250,6 +253,9 @@ class LifecycleInitializer {
 	 * @param t The exception to handle
 	 */
 	public void handleException(Throwable t) {
+		// 只对“服务端已不认识传输会话”重建协议初始化；普通网络错误不会在此统一重试。
+		// 关闭旧会话使其等待中的请求失败，再主动订阅一个空业务操作来触发新握手。
+		// 这不表示原先失败的工具调用会自动重放。
 		if (t instanceof McpTransportSessionNotFoundException) {
 			DefaultInitialization previous = this.initializationRef.getAndSet(null);
 			if (previous != null) {
@@ -270,6 +276,8 @@ class LifecycleInitializer {
 	 * @return A Mono that completes with the result of the operation
 	 */
 	public <T> Mono<T> withInitialization(String actionName, Function<Initialization, Mono<T>> operation) {
+		// deferContextual 将选举初始化者推迟到订阅：第一个成功放入 newInit 的订阅者
+		// 执行 doInitialize，其他订阅者等待同一个 initSink。这里并未为握手创建专属线程。
 		return Mono.deferContextual(ctx -> {
 			DefaultInitialization newInit = new DefaultInitialization();
 			DefaultInitialization previous = this.initializationRef.compareAndExchange(null, newInit);
@@ -281,6 +289,8 @@ class LifecycleInitializer {
 					? this.doInitialize(newInit, this.postInitializationHook, ctx) : previous.await();
 
 			return initializationJob.map(initializeResult -> this.initializationRef.get())
+				// 超时覆盖初始化及其后置钩子，不包含下面 flatMap 中的业务操作。
+				// 业务 RPC 另由 McpClientSession 的 requestTimeout 约束。
 				.timeout(this.initializationTimeout)
 				.onErrorResume(ex -> {
 					this.initializationRef.compareAndSet(newInit, null);
@@ -296,10 +306,14 @@ class LifecycleInitializer {
 			Function<Initialization, Mono<Void>> postInitOperation, ContextView ctx) {
 
 		initialization.setMcpClientSession(this.sessionSupplier.apply(ctx));
+		// sessionSupplier 创建 McpClientSession 时会订阅 transport.connect；
+		// 连接建立与协议 initialize 是两步，具体传输负责处理连接就绪前的发送。
 
 		McpClientSession mcpClientSession = initialization.mcpSession();
 
 		String latestVersion = this.protocolVersions.get(this.protocolVersions.size() - 1);
+		// 支持列表来自 transport，使用列表最后一项作为本轮首选版本。
+		// 服务端可以选择列表中的其他版本，下面检查的是“是否支持”，而不是必须相等。
 
 		McpSchema.InitializeRequest initializeRequest = McpSchema.InitializeRequest
 			.builder(latestVersion, this.clientCapabilities, this.clientInfo)
@@ -325,6 +339,8 @@ class LifecycleInitializer {
 						c -> c.put(McpAsyncClient.NEGOTIATED_PROTOCOL_VERSION, initializeResult.protocolVersion()))
 				.thenReturn(initializeResult);
 		}).flatMap(initializeResult -> {
+			// 先缓存结果供后置钩子读取，再完成钩子，最后通过 complete 放行等待者。
+			// 因此 currentInitializationResult 有值与所有后置工作完成并非同一个时间点。
 			initialization.cacheResult(initializeResult);
 			return postInitOperation.apply(initialization).thenReturn(initializeResult);
 		}).doOnNext(initialization::complete).onErrorResume(ex -> {

@@ -19,6 +19,9 @@ import reactor.core.publisher.Mono;
  */
 public interface McpClientTransport extends McpTransport {
 
+	// 中文导读：connect 接收的是“入站消息处理函数”，由 McpClientSession 装入分发逻辑。
+	// 它准备好收信通道即可完成，不等同于 MCP initialize 握手成功；两者属于不同层的生命周期。
+
 	/**
 	 * Used to register the incoming messages' handler and potentially (eagerly) connect
 	 * to the server.

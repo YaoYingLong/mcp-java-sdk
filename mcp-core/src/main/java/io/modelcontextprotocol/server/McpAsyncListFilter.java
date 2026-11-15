@@ -67,6 +67,8 @@ public interface McpAsyncListFilter<T> {
 	 * @param filters the filters to combine. May be {@code null} or empty, but MUST NOT
 	 * contain {@code null} elements.
 	 */
+	// 多个过滤器依次求值，语义为 AND；empty 与 false 都会隐藏此项，all 在首个 false 时短路。
+	// 过滤器报错使整个列表请求失败，不能把“校验失败”静默当成空列表；包装错误细节由服务器处理。
 	static <T> McpAsyncListFilter<T> and(List<McpAsyncListFilter<T>> filters) {
 		if (filters == null || filters.isEmpty()) {
 			return (transportContext, primitive) -> Mono.just(Boolean.TRUE);

@@ -56,6 +56,9 @@ import reactor.core.publisher.Mono;
  * @see McpAsyncClient
  * @see McpSchema
  */
+// 同步 API 的职责是把异步结果转换为调用线程上的等待；协议校验、初始化和请求关联
+// 全部复用 delegate。block() 会订阅 Mono，所以同步调用会实际启动对应的异步操作。
+// 普通调用的超时来自异步层；closeGracefully 另设 10 秒阻塞上限并用布尔值报告结果。
 public class McpSyncClient implements AutoCloseable {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpSyncClient.class);
@@ -469,6 +472,8 @@ public class McpSyncClient implements AutoCloseable {
 	 * @return the result of the action
 	 */
 	private <T> Mono<T> withProvidedContext(Mono<T> action) {
+		// 把同步环境提供的上下文放入 Reactor Context，HTTP 传输随后从中取得
+		// McpTransportContext 并传给请求定制器；这不是向 JSON-RPC params 添加字段。
 		return action.contextWrite(ctx -> ctx.put(McpTransportContext.KEY, this.contextProvider.get()));
 	}
 

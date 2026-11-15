@@ -25,6 +25,9 @@ import java.util.function.Function;
  */
 public class DefaultMcpTransportSession implements McpTransportSession<Disposable> {
 
+	// 中文导读：这是 HTTP 客户端的传输会话资源容器，不是处理 JSON-RPC 方法的 McpClientSession。
+	// 一个逻辑会话可以持有多个连接订阅，sessionId 用于 HTTP 请求中的会话关联。
+
 	private static final Logger logger = LoggerFactory.getLogger(DefaultMcpTransportSession.class);
 
 	private final Disposable.Composite openConnections = Disposables.composite();
@@ -46,6 +49,8 @@ public class DefaultMcpTransportSession implements McpTransportSession<Disposabl
 
 	@Override
 	public boolean markInitialized(String sessionId) {
+		// initialized 单独记录初始化状态，因为服务端可以不分配 sessionId；null 不代表尚未初始化。
+		// 只接受第一次的会话 id，后续响应给出不同 id 时记录警告而不静默替换。
 		boolean flipped = this.initialized.compareAndSet(false, true);
 		if (flipped) {
 			this.sessionId.set(sessionId);
@@ -77,6 +82,7 @@ public class DefaultMcpTransportSession implements McpTransportSession<Disposabl
 
 	@Override
 	public Mono<Void> closeGracefully() {
+		// 先由 transport 提供的回调执行远端关闭，再释放本地连接；回调失败也释放连接并保留错误。
 		return Mono.from(this.onClose.apply(this.sessionId.get()))
 			.onErrorResume(error -> Mono.fromRunnable(this.openConnections::dispose).then(Mono.error(error)))
 			.then(Mono.fromRunnable(this.openConnections::dispose));

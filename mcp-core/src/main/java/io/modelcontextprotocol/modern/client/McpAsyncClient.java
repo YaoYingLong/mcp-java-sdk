@@ -74,6 +74,9 @@ import reactor.core.publisher.Mono;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 应用入口层只生成不可变 spec：tools() 列表、tool(name) 调用、resource(uri) 读取等。
+// spec 保存参数和 CallSettings，设置参数返回新对象；终端方法把工作交给 AsyncClientRequester。
+// 返回的 Mono 是惰性的，订阅时才发送；每次订阅会获得自己的多轮请求状态，不能把 Mono 当已执行结果。
 public final class McpAsyncClient {
 
 	private final AsyncClientRequester requester;
@@ -496,6 +499,8 @@ public final class McpAsyncClient {
 		 * Calls the tool and emits its result, answering the server's input requests
 		 * along the way.
 		 */
+		// 自动模式：中途的 input_required 不作为返回值暴露，处理输入并重发，最终只发出 CallToolResult。
+		// 传输或协议失败走 Mono 的错误信号；工具正常返回的 isError=true 仍是一个结果值。
 		public Mono<CallToolResult> call() {
 			return this.requester.callTool(this.name, request(), this.settings, this.definition);
 		}
@@ -504,6 +509,8 @@ public final class McpAsyncClient {
 		 * Sends the call once and emits the server's answer: a {@link CallToolResult} or
 		 * an {@link InputRequiredResult}.
 		 */
+		// 手动模式：只推进一轮，联合结果类型允许调用者自己处理 InputRequiredResult。
+		// 若需跨进程/页面等待输入，可保存其中 requestState，随后通过 spec 的输入与状态参数继续调用。
 		public Mono<CallToolOutcome> callOnce() {
 			return this.requester.onceTool(this.name, request(), this.settings, this.definition)
 				.cast(CallToolOutcome.class);

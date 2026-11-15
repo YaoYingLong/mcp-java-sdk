@@ -26,6 +26,8 @@ import reactor.core.publisher.Mono;
  * for every {@code input_required} result, answering the server's input requests with the
  * call's asynchronous handlers, until the result is final.
  */
+// 异步轮次驱动器：使用 Reactor 串接输入处理与下一轮发送，返回最终业务结果。
+// 与 MultiRoundTripRequest 的职责区分：后者决定发送内容/结果分支，这里决定何时执行下一步。
 final class AsyncClientRequester {
 
 	private final ClientRequestFactory requests;
@@ -124,6 +126,8 @@ final class AsyncClientRequester {
 
 	private <R extends Result> Mono<R> run(Supplier<MultiRoundTripRequest<R>> requestSupplier,
 			CallSettings<Mono<?>> settings, String method) {
+		// 必须在 defer 内创建有状态的 request：同一个 Mono 被重复订阅时不能共享 inputRounds。
+		// expand 逐轮展开，遇到最终结果时 nextRound 返回空；last 只留下最后一轮供类型绑定。
 		Mono<R> call = Mono.defer(() -> {
 			MultiRoundTripRequest<R> request = requestSupplier.get();
 			// expand runs the rounds one after another from a queue, so neither the
@@ -155,6 +159,8 @@ final class AsyncClientRequester {
 		if (inputRequired == null) {
 			return Mono.empty();
 		}
+		// 无输入请求时只异步等待退避；有输入时调用声明过的 handler，并等待其 Mono 完成。
+		// 外层 callTimeout 覆盖网络、退避及用户输入全过程，不会在每轮重新计时。
 		Mono<HandlerResponses> responses = MultiRoundTripRequest.isStateOnly(inputRequired)
 				? Mono.delay(request.stateOnlyBackoff()).thenReturn(HandlerResponses.NONE)
 				: InputHandlers.respond(handlers, request.method(), inputRequired.inputRequests());

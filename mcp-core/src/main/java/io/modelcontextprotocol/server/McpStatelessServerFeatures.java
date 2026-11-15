@@ -25,6 +25,11 @@ import reactor.core.scheduler.Schedulers;
  * @author Dariusz Jędrzejczyk
  * @author Christian Tzolov
  */
+/*
+ * 无状态功能定义：业务回调的第一个参数是 McpTransportContext，不是 McpAsyncServerExchange。
+ * 它只能描述当前请求的身份/元数据，没有持久客户端能力或可主动发消息的会话入口。 同步函数仍经 fromSync 变成延迟 Mono，并按 immediateExecution
+ * 决定是否使用 boundedElastic。
+ */
 public class McpStatelessServerFeatures {
 
 	/**

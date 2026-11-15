@@ -24,6 +24,11 @@ import reactor.core.publisher.Mono;
  * @author Dariusz Jędrzejczyk
  * @author Christian Tzolov
  */
+/*
+ * 业务函数的本次交互入口，不拥有服务器注册表或连接生命周期。 transportContext 来自当前 HTTP 请求（由 Session 从 Reactor Context
+ * 取出），不能当成会话永久属性。 sessionId 标识逻辑会话；内部 session 可能是长期会话，也可能是当前 Streamable HTTP POST 的响应流，
+ * 因而业务内发起的 elicitation 等反向请求可先写入本次响应流，再等待客户端用另一 POST 回答。
+ */
 public class McpAsyncServerExchange {
 
 	private final String sessionId;
@@ -168,6 +173,8 @@ public class McpAsyncServerExchange {
 	 * "https://spec.modelcontextprotocol.io/specification/client/elicitation/">Elicitation
 	 * Specification</a>
 	 */
+	// 先校验客户端声明的能力/模式及表单 Schema，再通过 Session 发出 JSON-RPC 请求。
+	// 这里只验证 requestedSchema 定义，不能把这一步误认为对客户端返回用户数据的完整校验。
 	public Mono<McpSchema.ElicitResult> createElicitation(McpSchema.ElicitRequest elicitRequest) {
 		if (this.clientCapabilities == null) {
 			return Mono

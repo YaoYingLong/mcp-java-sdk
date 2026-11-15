@@ -34,6 +34,9 @@ import org.slf4j.LoggerFactory;
  *
  * @author Dariusz Jędrzejczyk
  */
+// modern 的线格式模型，与 legacy McpSchema 不共享类型；这里的 record 会直接映射 JSON 字段。
+// 请求版本/能力放 params._meta，结果 _meta 放 serverInfo；initialize 相关常量用于识别并拒绝旧握手。
+// 阅读优先关注 Result/Outcome/InputRequiredResult，再回看具体工具、资源和提示的请求/结果。
 public final class McpSchema {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpSchema.class);
@@ -172,6 +175,8 @@ public final class McpSchema {
 	 * Base type for every modern result; {@code resultType} is spec-required (see
 	 * {@link ResultType}).
 	 */
+	// 结果的协议判别字段是 resultType，并非 Java 类名：complete 表示本次调用完成，
+	// input_required 表示需要在下一次请求补充输入；JSON-RPC 外层仍是一条成功 result 响应。
 	public interface Result {
 
 		String resultType();
@@ -229,6 +234,8 @@ public final class McpSchema {
 	 * What a {@code tools/call} handler returns: a {@link CallToolResult} or input
 	 * required.
 	 */
+	// Outcome 是“最终结果或继续输入”的联合类型；自动 call() 只返回 CallToolResult，
+	// callOnce() 暴露 Outcome，允许应用跨页面或外部等待后自行带答案和 requestState 继续。
 	public interface CallToolOutcome extends Result {
 
 	}
@@ -1521,6 +1528,9 @@ public final class McpSchema {
 	 */
 	@JsonInclude(JsonInclude.Include.NON_ABSENT)
 	@JsonIgnoreProperties(ignoreUnknown = true)
+	// inputRequests 的 Map key 由业务选择，下一轮 inputResponses 以同一 key 对应答案。
+	// requestState 是跨轮恢复数据，可单独出现表示只要求稍后重发；客户端不解释其签名内容。
+	// 本类型同时实现三个核心 Outcome，说明它是共享的中间结果，而非工具执行错误或反向 RPC。
 	public record InputRequiredResult( // @formatter:off
 		@JsonProperty("inputRequests") Map<String, InputRequest> inputRequests,
 		@JsonProperty("requestState") String requestState,

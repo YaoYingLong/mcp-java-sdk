@@ -64,6 +64,9 @@ import reactor.core.publisher.Mono;
  * "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http">Streamable
  * HTTP</a>
  */
+// modern HTTP 一次 exchange 对应一次 POST；响应既可是 application/json，也可是 SSE 通知加终结响应。
+// 不创建 session、不用 GET 恢复事件流；协议协商和业务多轮由上层 sender/requester 负责。
+// 共享 HttpClient 连接池，身份从当前 Reactor Context 传给定制/授权回调，不由 transport 保存为用户会话。
 public final class HttpClientMcpTransport implements McpClientTransport {
 
 	private static final Logger logger = LoggerFactory.getLogger(HttpClientMcpTransport.class);
@@ -120,6 +123,8 @@ public final class HttpClientMcpTransport implements McpClientTransport {
 	@Override
 	public Flux<JSONRPCMessage> exchange(McpTransportRequest request) {
 		Assert.notNull(request, "request must not be null");
+		// 订阅时读取上下文，确保异步调用者提供的身份或同步调用捕获的身份进入本轮 HTTP 钩子。
+		// 只先序列化一次 body；授权重试重建请求头并重新执行 customizer，允许获取更新后的凭据。
 		return Flux.deferContextual(ctx -> {
 			McpTransportContext context = ctx.getOrDefault(McpTransportContext.KEY, McpTransportContext.EMPTY);
 			String body;
@@ -190,6 +195,8 @@ public final class HttpClientMcpTransport implements McpClientTransport {
 		});
 	}
 
+	// 非 2xx 也可能携带有效 JSON-RPC 错误，必须交回 sender 才能触发版本协商等协议处理。
+	// 无法解析为协议错误时才保留 HTTP 状态异常，401/403 则走前面的专用授权分支。
 	private Flux<JSONRPCMessage> statusError(HttpResponse<?> response, String text) {
 		// Modern servers answer protocol errors (unsupported version, header mismatch,
 		// unknown method, ...) with an error status and a JSON-RPC error body.

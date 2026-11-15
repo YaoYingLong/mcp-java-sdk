@@ -10,6 +10,8 @@ This SDK enables Java applications to interact with AI models and tools through 
 
 ## 📚 Reference Documentation 
 
+- [中文源码阅读指引](docs/source-reading-guide.zh-CN.md) — 模块地图、核心调用链、传统与 modern API 对照、断点及测试入口。
+
 #### MCP Java SDK documentation
 For comprehensive guides and SDK API documentation
 

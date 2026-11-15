@@ -19,6 +19,9 @@ import tools.jackson.databind.json.JsonMapper;
  */
 public final class JacksonMcpJsonMapper implements McpJsonMapper {
 
+	// 中文导读：将 SDK 的统一 JSON 接口适配到 Jackson 3（tools.jackson 包）。
+	// 读写失败转成 IOException，对象转换失败转成 IllegalArgumentException；上层再映射协议错误。
+
 	private final JsonMapper jsonMapper;
 
 	/**
@@ -65,6 +68,7 @@ public final class JacksonMcpJsonMapper implements McpJsonMapper {
 
 	@Override
 	public <T> T readValue(String content, TypeRef<T> type) throws IOException {
+		// 保留 TypeRef 中的泛型参数，否则反序列化集合时元素可能只得到 Map 而不是协议 record。
 		JavaType javaType = jsonMapper.getTypeFactory().constructType(type.getType());
 		try {
 			return jsonMapper.readValue(content, javaType);

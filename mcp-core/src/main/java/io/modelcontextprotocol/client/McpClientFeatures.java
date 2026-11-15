@@ -160,6 +160,9 @@ class McpClientFeatures {
 		 * user.
 		 */
 		public static Async fromSync(Sync syncSpec) {
+			// 同步回调到响应式回调的适配边界：fromRunnable/fromCallable 延后执行用户代码，
+			// subscribeOn 将这些源的订阅及回调执行交给 boundedElastic。
+			// 仅在 Mono 外面包一层并不能自动避免阻塞，下面每个包装都显式指定了调度器。
 			List<Function<List<McpSchema.Tool>, Mono<Void>>> toolsChangeConsumers = new ArrayList<>();
 			for (Consumer<List<McpSchema.Tool>> consumer : syncSpec.toolsChangeConsumers()) {
 				toolsChangeConsumers.add(t -> Mono.<Void>fromRunnable(() -> consumer.accept(t))

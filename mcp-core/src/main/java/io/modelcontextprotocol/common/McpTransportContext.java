@@ -31,6 +31,10 @@ import io.modelcontextprotocol.util.Assert;
  */
 public interface McpTransportContext {
 
+	// 中文导读：保存本次传输关联的元数据，例如从 HTTP 请求提取的身份信息；它不是线上 JSON 的 _meta。
+	// 异步路径通过 Reactor Context 按订阅传播，不能假设切换线程后 ThreadLocal 仍然可见。
+	// 同步客户端可通过 transportContextProvider 在调用线程采集，再写入其内部异步调用链。
+
 	/**
 	 * Key for use in Reactor Context to transport the context to user land. Write the
 	 * context under this key to make it visible to the transport, for example
@@ -73,6 +77,7 @@ public interface McpTransportContext {
 	 * @since 2.2.0
 	 */
 	default McpTransportContext putAll(Map<String, ?> map) {
+		// 接口只提供 get，不能枚举任意实现的全部数据，因此默认用覆盖层保留对原 context 的查询能力。
 		Assert.notNull(map, "The map cannot be null");
 		if (map.isEmpty()) {
 			return this;

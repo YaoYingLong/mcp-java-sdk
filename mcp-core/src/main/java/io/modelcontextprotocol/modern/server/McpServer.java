@@ -51,6 +51,10 @@ import reactor.core.publisher.Sinks;
  *
  * @author Dariusz Jędrzejczyk
  */
+// 服务端阅读主线：transport -> handle/handleBlocking -> dispatch -> McpFeature.handle ->
+// resultResponse。
+// 不保存 initialize 状态；每次 dispatch 从当前 _meta 重建 McpRequestContext 并选择 feature。
+// 无会话不等于无任何运行态：订阅流由 SubscriptionsFeature 管理，在途请求/取消归 transport 管理。
 public final class McpServer implements McpRequestManager {
 
 	private static final Logger logger = LoggerFactory.getLogger(McpServer.class);
@@ -144,6 +148,8 @@ public final class McpServer implements McpRequestManager {
 		if (meta == null) {
 			return invalidParams(id, "params._meta is required");
 		}
+		// 先验证版本再读取能力结构，确保不同版本的客户端收到可用于协商的 -32022，
+		// 而不是因为新旧能力字段形状不同而提前得到参数错误。
 		Object versionRaw = meta.get(MetaKeys.PROTOCOL_VERSION);
 		if (!(versionRaw instanceof String protocolVersion) || protocolVersion.isBlank()) {
 			return invalidParams(id, "_meta['" + MetaKeys.PROTOCOL_VERSION + "'] is required");
@@ -192,6 +198,9 @@ public final class McpServer implements McpRequestManager {
 				}
 			}
 		}
+		// 仅对 feature.inputRequiredMethods() 声明的方法启用状态恢复边界。
+		// 未声明的方法收到的 requestState 不在这里验证，自定义 feature 不能把它当可信恢复状态。
+		// 验证成功后只替换交给 handler 的参数，handler 看到原始业务状态而非签名封装。
 		Object requestState = paramsMap.get("requestState");
 		if (requestState != null && this.inputRequiredMethods.contains(request.method())) {
 			// Anything but a verified sealed string must not reach the handler.
@@ -211,6 +220,8 @@ public final class McpServer implements McpRequestManager {
 				.fromSupplier(() -> McpTransportResponse.error(bug(ctx, "Feature completed without a response"))));
 	}
 
+	// 响应有两层选择：外层 Result/Streaming 决定单 JSON 或通知流；
+	// 内层 Result.resultType 决定 complete/input_required，不能把流式响应等同于多轮输入。
 	private McpTransportResponse toTransportResponse(McpRequestContext ctx,
 			McpAsyncResponse<? extends Result> response) {
 		if (response instanceof McpAsyncResponse.Streaming<? extends Result> streaming) {
@@ -268,6 +279,8 @@ public final class McpServer implements McpRequestManager {
 		}
 		// A retry's result depends on inputs outside the cache key. The hints stay
 		// (they are required) but mark it uncacheable.
+		// 输入答案未必包含在普通缓存键中；恢复轮次的可缓存结果强制 ttlMs=0、PRIVATE。
+		// isRetry 来自本请求携带 inputResponses 或 requestState，不依赖服务器保存上一轮对象。
 		if (ctx.isRetry() && result instanceof CacheableResult) {
 			resultMap.put("ttlMs", 0L);
 			resultMap.put("cacheScope", this.jsonMapper.convertValue(CacheScope.PRIVATE, String.class));
@@ -507,6 +520,8 @@ public final class McpServer implements McpRequestManager {
 			return this;
 		}
 
+		// build 固化 method -> feature 路由表，拒绝重复方法/补全引用类型。
+		// discover 最后装配以汇总最终能力；不会为了声明能力额外运行一次 initialize。
 		public McpServer build() {
 			Assert.notNull(this.serverInfo, "serverInfo must not be null");
 			McpJsonMapper mapper = this.jsonMapper != null ? this.jsonMapper : McpJsonDefaults.getMapper();

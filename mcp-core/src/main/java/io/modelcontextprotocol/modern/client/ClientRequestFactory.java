@@ -22,6 +22,9 @@ import reactor.core.publisher.Mono;
  * asynchronous and the synchronous client use the same factory and differ only in how
  * they run the rounds of a request.
  */
+// 同步/异步客户端的共享装配点：先把 schema record 转成无 _meta 的参数 Map，
+// 再创建一次逻辑调用独占的 MultiRoundTripRequest；真正发送时由 sender 补齐每轮 _meta。
+// 此层不决定在哪个线程执行，也不等待结果，避免把传输、轮次和编程模型混在一起。
 final class ClientRequestFactory {
 
 	private final JsonRpcRequestSender sender;
@@ -72,6 +75,8 @@ final class ClientRequestFactory {
 	 */
 	MultiRoundTripRequest<CallToolResult> toolCall(String name, Object params, CallSettings<?> settings,
 			@Nullable Tool tool) {
+		// HTTP 的工具参数头依赖工具定义，故由 ToolParamHeaders 包装每轮发送；
+		// 不镜像头的传输直接走通用请求路径，工具定义不参与这一分支的调用准备。
 		if (!this.catalog.mirrorsToolParams()) {
 			return request(McpSchema.METHOD_TOOLS_CALL, name, params, settings, CallToolResult.class);
 		}
